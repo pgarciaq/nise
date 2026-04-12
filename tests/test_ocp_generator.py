@@ -41,6 +41,7 @@ from nise.generators.ocp.ocp_generator import OCP_POD_USAGE_COLUMNS
 from nise.generators.ocp.ocp_generator import OCP_ROS_NAMESPACE_USAGE
 from nise.generators.ocp.ocp_generator import OCP_ROS_NAMESPACE_USAGE_COLUMN
 from nise.generators.ocp.ocp_generator import OCP_ROS_USAGE
+from nise.generators.ocp.ocp_generator import OCP_ROS_USAGE_COLUMN
 from nise.generators.ocp.ocp_generator import OCP_STORAGE_COLUMNS
 from nise.generators.ocp.ocp_generator import OCP_STORAGE_USAGE
 from nise.generators.ocp.ocp_generator import OCP_VM_USAGE
@@ -1593,6 +1594,66 @@ class OCPGeneratorTestCase(TestCase):
         unique_uptimes = set(uptimes)
         self.assertEqual(len(unique_uptimes), 1, f"Expected all GPUs to have same uptime, got {unique_uptimes}")
         self.assertEqual(unique_uptimes.pop(), specific_pod_seconds)
+
+    def test_ros_usage_column_includes_oom_count(self):
+        """Test that OCP_ROS_USAGE_COLUMN includes the oom_count field."""
+        self.assertIn("oom_count", OCP_ROS_USAGE_COLUMN)
+
+    def test_ros_usage_column_oom_count_position(self):
+        """Test that oom_count follows memory_rss_usage_container_sum in the ROS CSV header."""
+        idx = OCP_ROS_USAGE_COLUMN.index("oom_count")
+        self.assertEqual(OCP_ROS_USAGE_COLUMN[idx - 1], "memory_rss_usage_container_sum")
+
+    def test_ros_data_contains_oom_count(self):
+        """Test that generated ROS pod data includes oom_count with valid values."""
+        random.seed(42)
+        generator = OCPGenerator(self.two_hours_ago, self.now, {}, ros_ocp_info=True)
+
+        has_zero = False
+        for pod_key, pod_data in generator.ros_data.items():
+            oom_val = pod_data.get("oom_count")
+            self.assertIsNotNone(oom_val, f"pod {pod_key} should have oom_count")
+            self.assertIsInstance(oom_val, int)
+            self.assertGreaterEqual(oom_val, 0)
+            self.assertLessEqual(oom_val, 3)
+            if oom_val == 0:
+                has_zero = True
+
+        self.assertTrue(has_zero, "at least one pod should have oom_count=0")
+
+    def test_ros_data_yaml_driven_contains_oom_count(self):
+        """Test that YAML-driven ROS pod data includes oom_count."""
+        random.seed(42)
+        attributes = {
+            "nodes": [
+                {
+                    "node_name": "test-node",
+                    "cpu_cores": 4,
+                    "memory_gig": 16,
+                    "namespaces": {
+                        "test-ns": {
+                            "pods": [
+                                {
+                                    "pod_name": "test-pod",
+                                    "cpu_request": 1,
+                                    "mem_request_gig": 2,
+                                    "cpu_limit": 2,
+                                    "mem_limit_gig": 4,
+                                }
+                            ]
+                        }
+                    },
+                }
+            ]
+        }
+        generator = OCPGenerator(self.two_hours_ago, self.now, attributes, ros_ocp_info=True)
+
+        for pod_key, pod_data in generator.ros_data.items():
+            oom_val = pod_data.get("oom_count")
+            self.assertIsNotNone(oom_val, f"YAML-driven pod {pod_key} should have oom_count")
+            self.assertIsInstance(oom_val, int)
+            self.assertGreaterEqual(oom_val, 0)
+            self.assertLessEqual(oom_val, 3)
 
 
 class ResolveMigPartitionIdTest(TestCase):
