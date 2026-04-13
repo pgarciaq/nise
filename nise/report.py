@@ -323,7 +323,9 @@ def post_payload_to_ingest_service(insights_upload, local_path, max_retries=3, i
         # Get OAuth token
         token_headers = {"Content-Type": "application/x-www-form-urlencoded"}
         token_data = f"client_id={hcc_service_account_id}&client_secret={hcc_service_account_secret}"
-        token_data += f"&grant_type=client_credentials&scope={hcc_token_scope}"
+        token_data += "&grant_type=client_credentials"
+        if hcc_token_scope:
+            token_data += f"&scope={hcc_token_scope}"
 
         try:
             token_resp = requests.post(hcc_token_url, data=token_data, headers=token_headers)
