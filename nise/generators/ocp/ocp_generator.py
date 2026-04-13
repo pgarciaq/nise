@@ -741,7 +741,7 @@ class OCPGenerator(AbstractGenerator):
             "memory_rss_usage_container_min": round(memory_usage_gig_min * memory_rss_ratio * GIGABYTE),
             "memory_rss_usage_container_max": round(memory_usage_gig_max * memory_rss_ratio * GIGABYTE),
             "memory_rss_usage_container_sum": round(memory_usage_gig_avg * memory_rss_ratio * GIGABYTE),
-            "oom_count": choices([0, randint(1, 3)], weights=(9, 1))[0],
+            "oom_count": specified_pod.get("oom_count", choices([0, randint(1, 3)], weights=(9, 1))[0]),
         }
         return pod_name, pod, ros_pod
 
