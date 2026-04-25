@@ -1,0 +1,81 @@
+---
+# OCP cluster topology for generating ROS (Resource Optimization Service) test data.
+#
+# Use with:
+#   nise report ocp --static-report-file ocp_static_data.yml \
+#     --ocp-cluster-id <CLUSTER_UUID> -w --ros-ocp-info
+#
+# The named pods here define CPU/memory requests and limits.  Nise also
+# generates additional random containers to fill each namespace, which is
+# fine — the post-processing script (postprocess_ros_csvs.py) normalises
+# all usage values into realistic scenarios regardless of container origin.
+#
+# Adjust start_date / end_date to your testing window. The native engine
+# needs at least 3 days of data to produce stable recommendations.
+generators:
+  - OCPGenerator:
+      start_date: 2026-04-10
+      end_date: 2026-04-25
+      nodes:
+        - node:
+            node_name: worker-1
+            node_labels: "label_environment:production|label_app:web-server"
+            cpu_cores: 8
+            memory_gig: 32
+            namespaces:
+              koku:
+                pods:
+                  - pod:
+                      pod_name: koku-api
+                      cpu_request: 500
+                      mem_request_gig: 2
+                      cpu_limit: 1000
+                      mem_limit_gig: 4
+                  - pod:
+                      pod_name: koku-worker
+                      cpu_request: 250
+                      mem_request_gig: 1
+                      cpu_limit: 500
+                      mem_limit_gig: 2
+              cost-management:
+                pods:
+                  - pod:
+                      pod_name: cost-model-worker
+                      cpu_request: 200
+                      mem_request_gig: 0.5
+                      cpu_limit: 400
+                      mem_limit_gig: 1
+              monitoring:
+                pods:
+                  - pod:
+                      pod_name: prometheus
+                      cpu_request: 1000
+                      mem_request_gig: 4
+                      cpu_limit: 2000
+                      mem_limit_gig: 8
+                  - pod:
+                      pod_name: grafana
+                      cpu_request: 100
+                      mem_request_gig: 0.25
+                      cpu_limit: 200
+                      mem_limit_gig: 0.5
+        - node:
+            node_name: worker-2
+            node_labels: "label_environment:staging|label_app:backend"
+            cpu_cores: 4
+            memory_gig: 16
+            namespaces:
+              staging:
+                pods:
+                  - pod:
+                      pod_name: api-server
+                      cpu_request: 300
+                      mem_request_gig: 1
+                      cpu_limit: 600
+                      mem_limit_gig: 2
+                  - pod:
+                      pod_name: celery-worker
+                      cpu_request: 200
+                      mem_request_gig: 0.5
+                      cpu_limit: 400
+                      mem_limit_gig: 1
