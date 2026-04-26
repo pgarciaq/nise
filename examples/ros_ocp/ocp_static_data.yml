@@ -31,12 +31,14 @@ generators:
                       mem_request_gig: 2
                       cpu_limit: 1000
                       mem_limit_gig: 4
+                      replica_count: 3
                   - pod:
                       pod_name: koku-worker
                       cpu_request: 250
                       mem_request_gig: 1
                       cpu_limit: 500
                       mem_limit_gig: 2
+                      replica_count: 2
               cost-management:
                 pods:
                   - pod:
@@ -53,12 +55,14 @@ generators:
                       mem_request_gig: 4
                       cpu_limit: 2000
                       mem_limit_gig: 8
+                      replica_count: 2
                   - pod:
                       pod_name: grafana
                       cpu_request: 100
                       mem_request_gig: 0.25
                       cpu_limit: 200
                       mem_limit_gig: 0.5
+                      replica_count: 1
         - node:
             node_name: worker-2
             node_labels: "label_environment:staging|label_app:backend"
