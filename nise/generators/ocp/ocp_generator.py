@@ -179,6 +179,7 @@ OCP_ROS_USAGE_COLUMN = (
     "memory_rss_usage_container_max",
     "memory_rss_usage_container_sum",
     "oom_count",
+    "workload_pod_count",
 )
 OCP_ROS_NAMESPACE_USAGE_COLUMN = (
     "report_period_start",
@@ -742,6 +743,9 @@ class OCPGenerator(AbstractGenerator):
             "memory_rss_usage_container_max": round(memory_usage_gig_max * memory_rss_ratio * GIGABYTE),
             "memory_rss_usage_container_sum": round(memory_usage_gig_avg * memory_rss_ratio * GIGABYTE),
             "oom_count": specified_pod.get("oom_count", choices([0, randint(1, 3)], weights=(9, 1))[0]),
+            "workload_pod_count": specified_pod.get(
+                "replica_count", choices([1, 2, 3, 4, 5], weights=(3, 3, 2, 1, 1))[0]
+            ),
         }
         return pod_name, pod, ros_pod
 
@@ -849,6 +853,7 @@ class OCPGenerator(AbstractGenerator):
                         "memory_rss_usage_container_max": round(memory_usage_gig_max * memory_rss_ratio * GIGABYTE),
                         "memory_rss_usage_container_sum": round(memory_usage_gig_avg * memory_rss_ratio * GIGABYTE),
                         "oom_count": choices([0, randint(1, 3)], weights=(9, 1))[0],
+                        "workload_pod_count": choices([1, 2, 3, 4, 5], weights=(3, 3, 2, 1, 1))[0],
                     }
 
         return pods, namespace2pod, ros_ocp_data_pods

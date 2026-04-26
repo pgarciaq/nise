@@ -1655,6 +1655,94 @@ class OCPGeneratorTestCase(TestCase):
             self.assertGreaterEqual(oom_val, 0)
             self.assertLessEqual(oom_val, 3)
 
+    def test_ros_usage_column_includes_workload_pod_count(self):
+        """Test that OCP_ROS_USAGE_COLUMN includes the workload_pod_count field."""
+        self.assertIn("workload_pod_count", OCP_ROS_USAGE_COLUMN)
+
+    def test_ros_usage_column_workload_pod_count_position(self):
+        """Test that workload_pod_count follows oom_count in the ROS CSV header."""
+        idx = OCP_ROS_USAGE_COLUMN.index("workload_pod_count")
+        self.assertEqual(OCP_ROS_USAGE_COLUMN[idx - 1], "oom_count")
+
+    def test_ros_data_contains_workload_pod_count(self):
+        """Test that generated ROS pod data includes workload_pod_count with valid values."""
+        random.seed(42)
+        generator = OCPGenerator(self.two_hours_ago, self.now, {}, ros_ocp_info=True)
+
+        for pod_key, pod_data in generator.ros_data.items():
+            wpc = pod_data.get("workload_pod_count")
+            self.assertIsNotNone(wpc, f"pod {pod_key} should have workload_pod_count")
+            self.assertIsInstance(wpc, int)
+            self.assertGreaterEqual(wpc, 1)
+            self.assertLessEqual(wpc, 5)
+
+    def test_ros_data_yaml_driven_contains_workload_pod_count(self):
+        """Test that YAML-driven ROS pod data includes workload_pod_count."""
+        attributes = {
+            "nodes": [
+                {
+                    "node_name": "test-node",
+                    "cpu_cores": 4,
+                    "memory_gig": 16,
+                    "namespaces": {
+                        "test-ns": {
+                            "pods": [
+                                {
+                                    "pod_name": "test-pod",
+                                    "cpu_request": 1,
+                                    "mem_request_gig": 2,
+                                    "cpu_limit": 2,
+                                    "mem_limit_gig": 4,
+                                }
+                            ]
+                        }
+                    },
+                }
+            ]
+        }
+        generator = OCPGenerator(self.two_hours_ago, self.now, attributes, ros_ocp_info=True)
+
+        for pod_key, pod_data in generator.ros_data.items():
+            wpc = pod_data.get("workload_pod_count")
+            self.assertIsNotNone(wpc, f"YAML-driven pod {pod_key} should have workload_pod_count")
+            self.assertIsInstance(wpc, int)
+            self.assertGreaterEqual(wpc, 1)
+            self.assertLessEqual(wpc, 5)
+
+    def test_ros_data_yaml_explicit_replica_count(self):
+        """Test that YAML replica_count is respected as workload_pod_count."""
+        attributes = {
+            "nodes": [
+                {
+                    "node_name": "test-node",
+                    "cpu_cores": 4,
+                    "memory_gig": 16,
+                    "namespaces": {
+                        "test-ns": {
+                            "pods": [
+                                {
+                                    "pod_name": "api-server",
+                                    "cpu_request": 1,
+                                    "mem_request_gig": 2,
+                                    "cpu_limit": 2,
+                                    "mem_limit_gig": 4,
+                                    "replica_count": 7,
+                                }
+                            ]
+                        }
+                    },
+                }
+            ]
+        }
+        generator = OCPGenerator(self.two_hours_ago, self.now, attributes, ros_ocp_info=True)
+
+        found = False
+        for pod_key, pod_data in generator.ros_data.items():
+            if pod_data.get("pod") == "api-server":
+                self.assertEqual(pod_data["workload_pod_count"], 7)
+                found = True
+        self.assertTrue(found, "api-server pod not found in ros_data")
+
 
 class ResolveMigPartitionIdTest(TestCase):
     """Tests for OCPGenerator._resolve_mig_partition_id."""
