@@ -12,74 +12,133 @@
 #
 # Adjust start_date / end_date to your testing window. The native engine
 # needs at least 3 days of data to produce stable recommendations.
+#
+# GPU data
+# --------
+# Nise randomly attaches GPUs to some pods.  The profiling metrics it
+# generates are uniformly random and do NOT produce deterministic GPU
+# classification scenarios (idle, underutilized, well_utilized, etc.).
+#
+# After generating, run postprocess_ros_csvs.py to replace the GPU
+# profiling columns with values that match known classification
+# thresholds.  See postprocess_ros_csvs.py for the full list of GPU
+# scenarios and how they are assigned.
 generators:
   - OCPGenerator:
       start_date: 2026-04-10
       end_date: 2026-04-25
       nodes:
         - node:
-            node_name: worker-1
-            node_labels: "label_environment:production|label_app:web-server"
-            cpu_cores: 8
-            memory_gig: 32
-            namespaces:
-              koku:
-                pods:
-                  - pod:
-                      pod_name: koku-api
-                      cpu_request: 500
-                      mem_request_gig: 2
-                      cpu_limit: 1000
-                      mem_limit_gig: 4
-                      replica_count: 3
-                  - pod:
-                      pod_name: koku-worker
-                      cpu_request: 250
-                      mem_request_gig: 1
-                      cpu_limit: 500
-                      mem_limit_gig: 2
-                      replica_count: 2
-              cost-management:
-                pods:
-                  - pod:
-                      pod_name: cost-model-worker
-                      cpu_request: 200
-                      mem_request_gig: 0.5
-                      cpu_limit: 400
-                      mem_limit_gig: 1
-              monitoring:
-                pods:
-                  - pod:
-                      pod_name: prometheus
-                      cpu_request: 1000
-                      mem_request_gig: 4
-                      cpu_limit: 2000
-                      mem_limit_gig: 8
-                      replica_count: 2
-                  - pod:
-                      pod_name: grafana
-                      cpu_request: 100
-                      mem_request_gig: 0.25
-                      cpu_limit: 200
-                      mem_limit_gig: 0.5
-                      replica_count: 1
+          node_name: worker-1
+          node_labels: "label_environment:production|label_app:web-server"
+          cpu_cores: 8
+          memory_gig: 32
+          namespaces:
+            koku:
+              pods:
+                - pod:
+                  pod_name: koku-api
+                  cpu_request: 500
+                  mem_request_gig: 2
+                  cpu_limit: 1000
+                  mem_limit_gig: 4
+                  replica_count: 3
+                - pod:
+                  pod_name: koku-worker
+                  cpu_request: 250
+                  mem_request_gig: 1
+                  cpu_limit: 500
+                  mem_limit_gig: 2
+                  replica_count: 2
+            cost-management:
+              pods:
+                - pod:
+                  pod_name: cost-model-worker
+                  cpu_request: 200
+                  mem_request_gig: 0.5
+                  cpu_limit: 400
+                  mem_limit_gig: 1
+            monitoring:
+              pods:
+                - pod:
+                  pod_name: prometheus
+                  cpu_request: 1000
+                  mem_request_gig: 4
+                  cpu_limit: 2000
+                  mem_limit_gig: 8
+                  replica_count: 2
+                - pod:
+                  pod_name: grafana
+                  cpu_request: 100
+                  mem_request_gig: 0.25
+                  cpu_limit: 200
+                  mem_limit_gig: 0.5
+                  replica_count: 1
         - node:
-            node_name: worker-2
-            node_labels: "label_environment:staging|label_app:backend"
-            cpu_cores: 4
-            memory_gig: 16
-            namespaces:
-              staging:
-                pods:
-                  - pod:
-                      pod_name: api-server
-                      cpu_request: 300
-                      mem_request_gig: 1
-                      cpu_limit: 600
-                      mem_limit_gig: 2
-                  - pod:
-                      pod_name: celery-worker
-                      cpu_request: 200
-                      mem_request_gig: 0.5
-                      cpu_limit: 400
-                      mem_limit_gig: 1
+          node_name: worker-2
+          node_labels: "label_environment:staging|label_app:backend"
+          cpu_cores: 4
+          memory_gig: 16
+          namespaces:
+            staging:
+              pods:
+                - pod:
+                  pod_name: api-server
+                  cpu_request: 300
+                  mem_request_gig: 1
+                  cpu_limit: 600
+                  mem_limit_gig: 2
+                - pod:
+                  pod_name: celery-worker
+                  cpu_request: 200
+                  mem_request_gig: 0.5
+                  cpu_limit: 400
+                  mem_limit_gig: 1
+        # GPU node — nise assigns random GPU metrics; postprocess_ros_csvs.py
+        # overwrites them with deterministic scenario-appropriate values.
+        - node:
+          node_name: gpu-worker-1
+          node_labels: "label_environment:production|label_accelerator:nvidia"
+          cpu_cores: 64
+          memory_gig: 512
+          namespaces:
+            ml-training:
+              pods:
+                - pod:
+                  pod_name: llm-finetune
+                  cpu_request: 8000
+                  mem_request_gig: 64
+                  cpu_limit: 16000
+                  mem_limit_gig: 128
+                  gpus:
+                    - gpu_model: A100
+                      gpu_memory_capacity_mib: 81920
+                - pod:
+                  pod_name: abandoned-notebook
+                  cpu_request: 2000
+                  mem_request_gig: 16
+                  cpu_limit: 4000
+                  mem_limit_gig: 32
+                  gpus:
+                    - gpu_model: A100
+                      gpu_memory_capacity_mib: 40960
+            ml-inference:
+              pods:
+                - pod:
+                  pod_name: embedding-server
+                  cpu_request: 4000
+                  mem_request_gig: 32
+                  cpu_limit: 8000
+                  mem_limit_gig: 64
+                  gpus:
+                    - gpu_model: A100
+                      gpu_memory_capacity_mib: 81920
+                - pod:
+                  pod_name: legacy-model
+                  cpu_request: 4000
+                  mem_request_gig: 16
+                  cpu_limit: 8000
+                  mem_limit_gig: 32
+                  gpus:
+                    - gpu_model: V100
+                      gpu_memory_capacity_mib: 16384

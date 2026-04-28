@@ -49,6 +49,7 @@ from nise.generators.ocp.ocp_generator import OCP_REPORT_TYPE_TO_COLS
 from nise.generators.ocp.ocp_generator import COST_OCP_REPORT_TYPE_TO_COLS
 from nise.generators.ocp.ocp_generator import ROS_OCP_REPORT_TYPE_TO_COLS
 from nise.generators.ocp.ocp_generator import OCPGenerator
+from nise.generators.ocp.ocp_generator import _gen_ros_gpu_metrics
 
 MAX_VOL_GIGS = 100
 
@@ -1933,6 +1934,148 @@ class OCPGeneratorTestCase(TestCase):
                 self.assertEqual(pod_data["accelerator_model_name"], "A100")
                 self.assertEqual(pod_data["accelerator_profile_name"], "3g.20gb")
         self.assertTrue(found, "mig-workload not found in ros_data")
+
+    def test_ros_data_gpu_idle_override(self):
+        """Test that YAML metric overrides produce idle-like GPU metrics."""
+        attributes = {
+            "nodes": [
+                {
+                    "node_name": "gpu-node",
+                    "cpu_cores": 16,
+                    "memory_gig": 64,
+                    "namespaces": {
+                        "ml-ns": {
+                            "pods": [
+                                {
+                                    "pod_name": "idle-gpu-pod",
+                                    "cpu_request": 1,
+                                    "mem_request_gig": 4,
+                                    "cpu_limit": 2,
+                                    "mem_limit_gig": 8,
+                                    "gpus": [
+                                        {
+                                            "gpu_model": "A100",
+                                            "gpu_memory_capacity_mib": 40960,
+                                            "sm_active_avg": 0.01,
+                                            "tensor_pipe_active_avg": 0.005,
+                                            "dram_active_avg": 0.02,
+                                            "fb_usage_avg": 50.0,
+                                        },
+                                    ],
+                                }
+                            ]
+                        }
+                    },
+                }
+            ]
+        }
+        generator = OCPGenerator(self.two_hours_ago, self.now, attributes, ros_ocp_info=True)
+
+        found = False
+        for pod_key, pod_data in generator.ros_data.items():
+            if pod_data.get("pod") == "idle-gpu-pod":
+                found = True
+                self.assertEqual(pod_data["accelerator_model_name"], "A100")
+                self.assertAlmostEqual(pod_data["sm_active_avg"], 0.01)
+                self.assertAlmostEqual(pod_data["tensor_pipe_active_avg"], 0.005)
+                self.assertAlmostEqual(pod_data["dram_active_avg"], 0.02)
+                self.assertAlmostEqual(pod_data["accelerator_frame_buffer_usage_avg"], 50.0)
+                self.assertLessEqual(pod_data["sm_active_max"], 1.0)
+                self.assertGreaterEqual(pod_data["sm_active_min"], 0.0)
+        self.assertTrue(found, "idle-gpu-pod not found in ros_data")
+
+    def test_ros_data_gpu_mig_candidate_override(self):
+        """Test metric overrides for a MIG-candidate GPU (active but low FB)."""
+        attributes = {
+            "nodes": [
+                {
+                    "node_name": "gpu-node",
+                    "cpu_cores": 16,
+                    "memory_gig": 64,
+                    "namespaces": {
+                        "ml-ns": {
+                            "pods": [
+                                {
+                                    "pod_name": "mig-candidate-pod",
+                                    "cpu_request": 4,
+                                    "mem_request_gig": 16,
+                                    "cpu_limit": 8,
+                                    "mem_limit_gig": 32,
+                                    "gpus": [
+                                        {
+                                            "gpu_model": "A100",
+                                            "gpu_memory_capacity_mib": 81920,
+                                            "sm_active_avg": 0.25,
+                                            "tensor_pipe_active_avg": 0.10,
+                                            "dram_active_avg": 0.15,
+                                            "fb_usage_avg": 3000.0,
+                                        },
+                                    ],
+                                }
+                            ]
+                        }
+                    },
+                }
+            ]
+        }
+        generator = OCPGenerator(self.two_hours_ago, self.now, attributes, ros_ocp_info=True)
+
+        found = False
+        for pod_key, pod_data in generator.ros_data.items():
+            if pod_data.get("pod") == "mig-candidate-pod":
+                found = True
+                self.assertEqual(pod_data["accelerator_model_name"], "A100")
+                self.assertAlmostEqual(pod_data["sm_active_avg"], 0.25)
+                self.assertAlmostEqual(pod_data["tensor_pipe_active_avg"], 0.10)
+                self.assertAlmostEqual(pod_data["dram_active_avg"], 0.15)
+                self.assertAlmostEqual(pod_data["accelerator_frame_buffer_usage_avg"], 3000.0)
+        self.assertTrue(found, "mig-candidate-pod not found in ros_data")
+
+
+class GenRosGpuMetricsTest(TestCase):
+    """Tests for the _gen_ros_gpu_metrics function with overrides."""
+
+    def test_tier1_no_overrides_generates_random(self):
+        m = _gen_ros_gpu_metrics("A100", 40960)
+        self.assertEqual(m["accelerator_model_name"], "A100")
+        self.assertIsInstance(m["sm_active_avg"], float)
+        self.assertGreaterEqual(m["sm_active_avg"], 0.05)
+        self.assertLessEqual(m["sm_active_avg"], 0.90)
+
+    def test_tier1_idle_overrides(self):
+        overrides = {
+            "sm_active_avg": 0.01,
+            "tensor_pipe_active_avg": 0.005,
+            "dram_active_avg": 0.02,
+            "fb_usage_avg": 50.0,
+        }
+        m = _gen_ros_gpu_metrics("A100", 40960, overrides=overrides)
+        self.assertAlmostEqual(m["sm_active_avg"], 0.01)
+        self.assertAlmostEqual(m["tensor_pipe_active_avg"], 0.005)
+        self.assertAlmostEqual(m["dram_active_avg"], 0.02)
+        self.assertAlmostEqual(m["accelerator_frame_buffer_usage_avg"], 50.0)
+        self.assertLessEqual(m["sm_active_min"], 0.01)
+        self.assertGreaterEqual(m["sm_active_min"], 0.0)
+
+    def test_tier2_overrides_only_fb(self):
+        overrides = {"fb_usage_avg": 100.0}
+        m = _gen_ros_gpu_metrics("V100", 16384, overrides=overrides)
+        self.assertAlmostEqual(m["accelerator_frame_buffer_usage_avg"], 100.0)
+        self.assertEqual(m["sm_active_avg"], "")
+
+    def test_partial_overrides_rest_random(self):
+        overrides = {"sm_active_avg": 0.80}
+        m = _gen_ros_gpu_metrics("A100", 40960, overrides=overrides)
+        self.assertAlmostEqual(m["sm_active_avg"], 0.80)
+        self.assertIsInstance(m["tensor_pipe_active_avg"], float)
+        self.assertIsInstance(m["dram_active_avg"], float)
+
+    def test_mig_profile_with_overrides(self):
+        overrides = {"sm_active_avg": 0.50, "fb_usage_avg": 5000.0}
+        m = _gen_ros_gpu_metrics("A100", 81920, mig_profile="3g.40gb", overrides=overrides)
+        self.assertEqual(m["accelerator_profile_name"], "3g.40gb")
+        self.assertAlmostEqual(m["sm_active_avg"], 0.50)
+        self.assertAlmostEqual(m["accelerator_frame_buffer_usage_avg"], 5000.0)
 
 
 class ResolveMigPartitionIdTest(TestCase):
