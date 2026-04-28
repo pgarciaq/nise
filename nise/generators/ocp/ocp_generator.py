@@ -409,17 +409,24 @@ GPU_VENDOR = "nvidia_com_gpu"
 GPU_PROFILING_SUPPORTED = {"Tesla T4", "A100", "H100", "A30", "L40S", "A10"}
 
 
-def _gen_ros_gpu_metrics(gpu_model, gpu_memory_mib, mig_profile=None):
+def _gen_ros_gpu_metrics(gpu_model, gpu_memory_mib, mig_profile=None, overrides=None):
     """Generate realistic GPU profiling metrics for a ROS CSV row.
 
     Returns a dict with the 14 GPU columns. For Tier 1 GPUs, generates
     all profiling metrics. For Tier 2, only frame buffer usage.
+
+    ``overrides`` is an optional dict from the YAML gpu spec that can pin
+    specific metric values instead of using random generation.  Supported
+    keys: ``sm_active_avg``, ``tensor_pipe_active_avg``,
+    ``dram_active_avg``, ``fb_usage_avg`` (MiB).
     """
+    overrides = overrides or {}
+
     fb_capacity = gpu_memory_mib
     if mig_profile:
         fb_capacity = min(fb_capacity, gpu_memory_mib // 2)
 
-    fb_usage_avg = round(uniform(0.1, 0.9) * fb_capacity, 1)
+    fb_usage_avg = overrides.get("fb_usage_avg", round(uniform(0.1, 0.9) * fb_capacity, 1))
     fb_usage_min = round(max(0, fb_usage_avg * uniform(0.5, 0.95)), 1)
     fb_usage_max = round(min(fb_capacity, fb_usage_avg * uniform(1.05, 1.5)), 1)
 
@@ -432,9 +439,9 @@ def _gen_ros_gpu_metrics(gpu_model, gpu_memory_mib, mig_profile=None):
     }
 
     if gpu_model in GPU_PROFILING_SUPPORTED:
-        tensor = round(uniform(0.0, 0.85), 4)
-        dram = round(uniform(0.05, 0.95), 4)
-        sm = round(uniform(0.05, 0.90), 4)
+        tensor = overrides.get("tensor_pipe_active_avg", round(uniform(0.0, 0.85), 4))
+        dram = overrides.get("dram_active_avg", round(uniform(0.05, 0.95), 4))
+        sm = overrides.get("sm_active_avg", round(uniform(0.05, 0.90), 4))
         metrics.update(
             {
                 "tensor_pipe_active_min": round(max(0, tensor * uniform(0.3, 0.9)), 4),
@@ -1791,6 +1798,11 @@ class OCPGenerator(AbstractGenerator):
                 parent_gpu_uuid = f"GPU-{uuid5(NAMESPACE_DNS, name)}"
                 gpu_memory = gpu_spec.get("gpu_memory_capacity_mib", GPU_MEMORY_CAPACITY.get(gpu_model, 15360))
                 mig_instances = gpu_spec.get("mig_instances", [])
+                gpu_metric_overrides = {}
+                for ovr_key in ("sm_active_avg", "tensor_pipe_active_avg", "dram_active_avg", "fb_usage_avg"):
+                    if ovr_key in gpu_spec:
+                        gpu_metric_overrides[ovr_key] = gpu_spec[ovr_key]
+
                 if not mig_instances:
                     pod_gpus.append(
                         {
@@ -1801,6 +1813,7 @@ class OCPGenerator(AbstractGenerator):
                             "mig_instance_id": None,
                             "mig_profile": None,
                             "mig_strategy": None,
+                            "metric_overrides": gpu_metric_overrides,
                         }
                     )
                     continue
@@ -1815,7 +1828,6 @@ class OCPGenerator(AbstractGenerator):
                         pod_name, mig_name, mig_spec.get("mig_instance_id")
                     )
 
-                    # Physical GPU uuid is shared by all MIG slices on this YAML gpu entry.
                     pod_gpus.append(
                         {
                             "gpu_uuid": parent_gpu_uuid,
@@ -1825,6 +1837,7 @@ class OCPGenerator(AbstractGenerator):
                             "mig_instance_id": mig_partition_id,
                             "mig_profile": mig_profile,
                             "mig_strategy": mig_strategy,
+                            "metric_overrides": gpu_metric_overrides,
                         }
                     )
 
@@ -1846,7 +1859,8 @@ class OCPGenerator(AbstractGenerator):
                 gpu_model = gpu["gpu_model_name"]
                 gpu_memory = gpu.get("gpu_memory_capacity_mib", GPU_MEMORY_CAPACITY.get(gpu_model, 15360))
                 mig_profile = gpu.get("mig_profile")
-                ros_pod.update(_gen_ros_gpu_metrics(gpu_model, gpu_memory, mig_profile))
+                overrides = gpu.get("metric_overrides")
+                ros_pod.update(_gen_ros_gpu_metrics(gpu_model, gpu_memory, mig_profile, overrides))
             else:
                 ros_pod.update(_EMPTY_GPU_METRICS)
 
