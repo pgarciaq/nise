@@ -180,6 +180,20 @@ OCP_ROS_USAGE_COLUMN = (
     "memory_rss_usage_container_sum",
     "oom_count",
     "workload_pod_count",
+    "accelerator_model_name",
+    "accelerator_profile_name",
+    "accelerator_frame_buffer_usage_min",
+    "accelerator_frame_buffer_usage_max",
+    "accelerator_frame_buffer_usage_avg",
+    "tensor_pipe_active_min",
+    "tensor_pipe_active_max",
+    "tensor_pipe_active_avg",
+    "dram_active_min",
+    "dram_active_max",
+    "dram_active_avg",
+    "sm_active_min",
+    "sm_active_max",
+    "sm_active_avg",
 )
 OCP_ROS_NAMESPACE_USAGE_COLUMN = (
     "report_period_start",
@@ -391,6 +405,83 @@ GPU_MEMORY_CAPACITY = {
 
 GPU_VENDOR = "nvidia_com_gpu"
 
+# Tier 1: Turing+ datacenter GPUs that support DCGM PROF_ metrics
+GPU_PROFILING_SUPPORTED = {"Tesla T4", "A100", "H100", "A30", "L40S", "A10"}
+
+
+def _gen_ros_gpu_metrics(gpu_model, gpu_memory_mib, mig_profile=None):
+    """Generate realistic GPU profiling metrics for a ROS CSV row.
+
+    Returns a dict with the 14 GPU columns. For Tier 1 GPUs, generates
+    all profiling metrics. For Tier 2, only frame buffer usage.
+    """
+    fb_capacity = gpu_memory_mib
+    if mig_profile:
+        fb_capacity = min(fb_capacity, gpu_memory_mib // 2)
+
+    fb_usage_avg = round(uniform(0.1, 0.9) * fb_capacity, 1)
+    fb_usage_min = round(max(0, fb_usage_avg * uniform(0.5, 0.95)), 1)
+    fb_usage_max = round(min(fb_capacity, fb_usage_avg * uniform(1.05, 1.5)), 1)
+
+    metrics = {
+        "accelerator_model_name": gpu_model,
+        "accelerator_profile_name": mig_profile or "",
+        "accelerator_frame_buffer_usage_min": fb_usage_min,
+        "accelerator_frame_buffer_usage_max": fb_usage_max,
+        "accelerator_frame_buffer_usage_avg": fb_usage_avg,
+    }
+
+    if gpu_model in GPU_PROFILING_SUPPORTED:
+        tensor = round(uniform(0.0, 0.85), 4)
+        dram = round(uniform(0.05, 0.95), 4)
+        sm = round(uniform(0.05, 0.90), 4)
+        metrics.update(
+            {
+                "tensor_pipe_active_min": round(max(0, tensor * uniform(0.3, 0.9)), 4),
+                "tensor_pipe_active_max": round(min(1.0, tensor * uniform(1.1, 1.8)), 4),
+                "tensor_pipe_active_avg": tensor,
+                "dram_active_min": round(max(0, dram * uniform(0.4, 0.9)), 4),
+                "dram_active_max": round(min(1.0, dram * uniform(1.1, 1.6)), 4),
+                "dram_active_avg": dram,
+                "sm_active_min": round(max(0, sm * uniform(0.3, 0.9)), 4),
+                "sm_active_max": round(min(1.0, sm * uniform(1.1, 1.7)), 4),
+                "sm_active_avg": sm,
+            }
+        )
+    else:
+        for key in (
+            "tensor_pipe_active_min",
+            "tensor_pipe_active_max",
+            "tensor_pipe_active_avg",
+            "dram_active_min",
+            "dram_active_max",
+            "dram_active_avg",
+            "sm_active_min",
+            "sm_active_max",
+            "sm_active_avg",
+        ):
+            metrics[key] = ""
+
+    return metrics
+
+
+_EMPTY_GPU_METRICS = {
+    "accelerator_model_name": "",
+    "accelerator_profile_name": "",
+    "accelerator_frame_buffer_usage_min": "",
+    "accelerator_frame_buffer_usage_max": "",
+    "accelerator_frame_buffer_usage_avg": "",
+    "tensor_pipe_active_min": "",
+    "tensor_pipe_active_max": "",
+    "tensor_pipe_active_avg": "",
+    "dram_active_min": "",
+    "dram_active_max": "",
+    "dram_active_avg": "",
+    "sm_active_min": "",
+    "sm_active_max": "",
+    "sm_active_avg": "",
+}
+
 
 def get_storage_class_and_driver():
     return choice(
@@ -512,6 +603,7 @@ class OCPGenerator(AbstractGenerator):
         self.volumes = self._gen_volumes(self.namespaces, self.namespace2pods)
         self.vms, self.namespace2vm = self._gen_virtual_machines(self.namespaces)
         self.gpus = self._gen_gpus()
+        self._enrich_ros_data_with_gpus()
 
         ros_reports = {
             OCP_ROS_USAGE: {
@@ -1247,6 +1339,21 @@ class OCPGenerator(AbstractGenerator):
         cpu_limit = pod_in.get("cpu_limit_container_avg", 1000000)
         memory_limit = pod_in.get("memory_limit_container_avg", 1e20)
 
+        gpu_values_to_randomize = [
+            "accelerator_frame_buffer_usage_min",
+            "accelerator_frame_buffer_usage_max",
+            "accelerator_frame_buffer_usage_avg",
+            "tensor_pipe_active_min",
+            "tensor_pipe_active_max",
+            "tensor_pipe_active_avg",
+            "dram_active_min",
+            "dram_active_max",
+            "dram_active_avg",
+            "sm_active_min",
+            "sm_active_max",
+            "sm_active_avg",
+        ]
+
         pod_out = pod_in.copy()
         for pod_key in values_to_randomize:
             if pod_value := pod_in.get(pod_key):
@@ -1254,6 +1361,13 @@ class OCPGenerator(AbstractGenerator):
                     pod_out[pod_key] = round(min(randomization_value * pod_value, cpu_limit), 5)
                 else:
                     pod_out[pod_key] = round(min(randomization_value * pod_value, memory_limit))
+        for pod_key in gpu_values_to_randomize:
+            pod_value = pod_in.get(pod_key)
+            if pod_value and pod_value != "":
+                if pod_key.startswith("accelerator_frame"):
+                    pod_out[pod_key] = round(randomization_value * pod_value, 1)
+                else:
+                    pod_out[pod_key] = round(min(1.0, max(0.0, randomization_value * pod_value)), 4)
         return pod_out
 
     def _update_ros_ocp_pod_data(self, row, start, end, **kwargs):
@@ -1717,6 +1831,24 @@ class OCPGenerator(AbstractGenerator):
             gpus[pod_name] = pod_gpus
 
         return gpus
+
+    def _enrich_ros_data_with_gpus(self):
+        """Add GPU profiling metrics to ROS pod data for pods that have GPUs.
+
+        Uses the first GPU attached to each pod (the operator reports one
+        row per container, not per GPU, so we pick the primary GPU).
+        Pods without GPUs get empty GPU columns.
+        """
+        for pod_name, ros_pod in self.ros_data.items():
+            pod_gpus = self.gpus.get(pod_name)
+            if pod_gpus:
+                gpu = pod_gpus[0]
+                gpu_model = gpu["gpu_model_name"]
+                gpu_memory = gpu.get("gpu_memory_capacity_mib", GPU_MEMORY_CAPACITY.get(gpu_model, 15360))
+                mig_profile = gpu.get("mig_profile")
+                ros_pod.update(_gen_ros_gpu_metrics(gpu_model, gpu_memory, mig_profile))
+            else:
+                ros_pod.update(_EMPTY_GPU_METRICS)
 
     def _gen_hourly_gpu_usage(self, **kwargs):
         """Create hourly data for GPU usage."""

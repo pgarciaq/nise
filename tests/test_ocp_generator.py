@@ -1743,6 +1743,197 @@ class OCPGeneratorTestCase(TestCase):
                 found = True
         self.assertTrue(found, "api-server pod not found in ros_data")
 
+    def test_ros_usage_column_includes_gpu_columns(self):
+        """Test that OCP_ROS_USAGE_COLUMN includes all 14 GPU profiling columns."""
+        gpu_columns = [
+            "accelerator_model_name",
+            "accelerator_profile_name",
+            "accelerator_frame_buffer_usage_min",
+            "accelerator_frame_buffer_usage_max",
+            "accelerator_frame_buffer_usage_avg",
+            "tensor_pipe_active_min",
+            "tensor_pipe_active_max",
+            "tensor_pipe_active_avg",
+            "dram_active_min",
+            "dram_active_max",
+            "dram_active_avg",
+            "sm_active_min",
+            "sm_active_max",
+            "sm_active_avg",
+        ]
+        for col in gpu_columns:
+            with self.subTest(column=col):
+                self.assertIn(col, OCP_ROS_USAGE_COLUMN)
+
+    def test_ros_usage_column_gpu_columns_after_workload_pod_count(self):
+        """Test that GPU columns appear after workload_pod_count in the ROS CSV header."""
+        wpc_idx = OCP_ROS_USAGE_COLUMN.index("workload_pod_count")
+        model_idx = OCP_ROS_USAGE_COLUMN.index("accelerator_model_name")
+        self.assertEqual(model_idx, wpc_idx + 1)
+
+    def test_ros_data_gpu_pod_has_gpu_metrics(self):
+        """Test that ROS data for GPU-equipped pods includes GPU profiling metrics."""
+        attributes = {
+            "nodes": [
+                {
+                    "node_name": "gpu-node",
+                    "cpu_cores": 16,
+                    "memory_gig": 64,
+                    "namespaces": {
+                        "ml-ns": {
+                            "pods": [
+                                {
+                                    "pod_name": "training-pod",
+                                    "cpu_request": 4,
+                                    "mem_request_gig": 16,
+                                    "cpu_limit": 8,
+                                    "mem_limit_gig": 32,
+                                    "gpus": [
+                                        {"gpu_model": "A100", "gpu_memory_capacity_mib": 40960},
+                                    ],
+                                }
+                            ]
+                        }
+                    },
+                }
+            ]
+        }
+        generator = OCPGenerator(self.two_hours_ago, self.now, attributes, ros_ocp_info=True)
+
+        found = False
+        for pod_key, pod_data in generator.ros_data.items():
+            if pod_data.get("pod") == "training-pod":
+                found = True
+                self.assertEqual(pod_data["accelerator_model_name"], "A100")
+                self.assertIsInstance(pod_data["accelerator_frame_buffer_usage_avg"], float)
+                self.assertGreater(pod_data["accelerator_frame_buffer_usage_avg"], 0)
+                self.assertIsInstance(pod_data["tensor_pipe_active_avg"], float)
+                self.assertGreaterEqual(pod_data["tensor_pipe_active_avg"], 0)
+                self.assertLessEqual(pod_data["tensor_pipe_active_avg"], 1.0)
+                self.assertIsInstance(pod_data["dram_active_avg"], float)
+                self.assertIsInstance(pod_data["sm_active_avg"], float)
+        self.assertTrue(found, "training-pod not found in ros_data")
+
+    def test_ros_data_non_gpu_pod_has_empty_gpu_metrics(self):
+        """Test that ROS data for non-GPU pods has empty GPU columns."""
+        attributes = {
+            "nodes": [
+                {
+                    "node_name": "cpu-node",
+                    "cpu_cores": 4,
+                    "memory_gig": 16,
+                    "namespaces": {
+                        "web-ns": {
+                            "pods": [
+                                {
+                                    "pod_name": "web-server",
+                                    "cpu_request": 1,
+                                    "mem_request_gig": 2,
+                                    "cpu_limit": 2,
+                                    "mem_limit_gig": 4,
+                                }
+                            ]
+                        }
+                    },
+                }
+            ]
+        }
+        generator = OCPGenerator(self.two_hours_ago, self.now, attributes, ros_ocp_info=True)
+
+        found = False
+        for pod_key, pod_data in generator.ros_data.items():
+            if pod_data.get("pod") == "web-server":
+                found = True
+                self.assertEqual(pod_data["accelerator_model_name"], "")
+                self.assertEqual(pod_data["accelerator_profile_name"], "")
+                self.assertEqual(pod_data["tensor_pipe_active_avg"], "")
+                self.assertEqual(pod_data["accelerator_frame_buffer_usage_avg"], "")
+        self.assertTrue(found, "web-server not found in ros_data")
+
+    def test_ros_data_tier2_gpu_no_profiling_metrics(self):
+        """Test that Tier 2 GPUs (V100) have FB usage but empty PROF_ metrics."""
+        attributes = {
+            "nodes": [
+                {
+                    "node_name": "v100-node",
+                    "cpu_cores": 16,
+                    "memory_gig": 64,
+                    "namespaces": {
+                        "legacy-ns": {
+                            "pods": [
+                                {
+                                    "pod_name": "legacy-ml-pod",
+                                    "cpu_request": 4,
+                                    "mem_request_gig": 16,
+                                    "cpu_limit": 8,
+                                    "mem_limit_gig": 32,
+                                    "gpus": [
+                                        {"gpu_model": "V100", "gpu_memory_capacity_mib": 32768},
+                                    ],
+                                }
+                            ]
+                        }
+                    },
+                }
+            ]
+        }
+        generator = OCPGenerator(self.two_hours_ago, self.now, attributes, ros_ocp_info=True)
+
+        found = False
+        for pod_key, pod_data in generator.ros_data.items():
+            if pod_data.get("pod") == "legacy-ml-pod":
+                found = True
+                self.assertEqual(pod_data["accelerator_model_name"], "V100")
+                self.assertIsInstance(pod_data["accelerator_frame_buffer_usage_avg"], float)
+                self.assertGreater(pod_data["accelerator_frame_buffer_usage_avg"], 0)
+                self.assertEqual(pod_data["tensor_pipe_active_avg"], "")
+                self.assertEqual(pod_data["dram_active_avg"], "")
+                self.assertEqual(pod_data["sm_active_avg"], "")
+        self.assertTrue(found, "legacy-ml-pod not found in ros_data")
+
+    def test_ros_data_mig_gpu_has_profile_name(self):
+        """Test that MIG-equipped GPUs include the profile name in ROS data."""
+        attributes = {
+            "nodes": [
+                {
+                    "node_name": "mig-node",
+                    "cpu_cores": 32,
+                    "memory_gig": 256,
+                    "namespaces": {
+                        "mig-ns": {
+                            "pods": [
+                                {
+                                    "pod_name": "mig-workload",
+                                    "cpu_request": 8,
+                                    "mem_request_gig": 64,
+                                    "cpu_limit": 16,
+                                    "mem_limit_gig": 128,
+                                    "gpus": [
+                                        {
+                                            "gpu_model": "A100",
+                                            "gpu_memory_capacity_mib": 40960,
+                                            "mig_instances": [
+                                                {"mig_profile": "3g.20gb", "mig_strategy": "mixed"},
+                                            ],
+                                        },
+                                    ],
+                                }
+                            ]
+                        }
+                    },
+                }
+            ]
+        }
+        generator = OCPGenerator(self.two_hours_ago, self.now, attributes, ros_ocp_info=True)
+
+        found = False
+        for pod_key, pod_data in generator.ros_data.items():
+            if pod_data.get("pod") == "mig-workload":
+                found = True
+                self.assertEqual(pod_data["accelerator_model_name"], "A100")
+                self.assertEqual(pod_data["accelerator_profile_name"], "3g.20gb")
+        self.assertTrue(found, "mig-workload not found in ros_data")
+
 
 class ResolveMigPartitionIdTest(TestCase):
     """Tests for OCPGenerator._resolve_mig_partition_id."""
