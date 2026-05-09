@@ -17,6 +17,7 @@
 """Defines the abstract generator."""
 
 import datetime
+import json
 from collections import defaultdict
 from copy import deepcopy
 from random import choice
@@ -48,6 +49,7 @@ OCP_VM_USAGE = "ocp_vm_usage"
 OCP_ROS_USAGE = "ocp_ros_usage"
 OCP_ROS_NAMESPACE_USAGE = "ocp_ros_namespace_usage"
 OCP_GPU_USAGE = "ocp_gpu_usage"
+OCP_SNAPSHOT_INVENTORY = "ocp_snapshot_inventory"
 OCP_POD_USAGE_COLUMNS = (
     "report_period_start",
     "report_period_end",
@@ -239,6 +241,22 @@ OCP_GPU_USAGE_COLUMNS = (
     "mig_profile",
     "mig_strategy",
 )
+OCP_SNAPSHOT_INVENTORY_COLUMNS = (
+    "interval_start",
+    "interval_end",
+    "namespace",
+    "snapshot_name",
+    "source_pvc_name",
+    "volume_snapshot_class",
+    "storageclass",
+    "creation_timestamp",
+    "restore_size_bytes",
+    "ready_to_use",
+    "source_pvc_exists",
+    "restored_pvc_count",
+    "labels",
+)
+
 COST_OCP_REPORT_TYPE_TO_COLS = {
     OCP_POD_USAGE: OCP_POD_USAGE_COLUMNS,
     OCP_STORAGE_USAGE: OCP_STORAGE_COLUMNS,
@@ -251,6 +269,7 @@ COST_OCP_REPORT_TYPE_TO_COLS = {
 ROS_OCP_REPORT_TYPE_TO_COLS = {
     OCP_ROS_USAGE: OCP_ROS_USAGE_COLUMN,
     OCP_ROS_NAMESPACE_USAGE: OCP_ROS_NAMESPACE_USAGE_COLUMN,
+    OCP_SNAPSHOT_INVENTORY: OCP_SNAPSHOT_INVENTORY_COLUMNS,
 }
 
 OCP_REPORT_TYPE_TO_COLS = COST_OCP_REPORT_TYPE_TO_COLS | ROS_OCP_REPORT_TYPE_TO_COLS
@@ -623,9 +642,19 @@ class OCPGenerator(AbstractGenerator):
             },
         }
 
+        snapshot_report = {
+            OCP_SNAPSHOT_INVENTORY: {
+                "_generate_hourly_data": self._gen_snapshot_inventory_rows,
+                "_update_data": self._update_snapshot_data,
+            },
+        }
+
         if self.ros_only:
             # ONLY ROS reports
             self.ocp_report_generation = ros_reports
+            if self.ros_ocp_info:
+                self.snapshots = self._gen_snapshots()
+                self.ocp_report_generation.update(snapshot_report)
         else:
             self.ocp_report_generation = {
                 OCP_POD_USAGE: {
@@ -655,7 +684,9 @@ class OCPGenerator(AbstractGenerator):
             }
 
             if self.ros_ocp_info:
+                self.snapshots = self._gen_snapshots()
                 self.ocp_report_generation.update(ros_reports)
+                self.ocp_report_generation.update(snapshot_report)
 
     @staticmethod
     def timestamp(in_date):
@@ -1918,6 +1949,108 @@ class OCPGenerator(AbstractGenerator):
             "mig_instance_id": kwargs.get("mig_instance_id"),
             "mig_profile": kwargs.get("mig_profile"),
             "mig_strategy": kwargs.get("mig_strategy"),
+        }
+        row.update(data)
+        return row
+
+    def _gen_snapshots(self):
+        """Generate fake VolumeSnapshot inventory data for testing snapshot staleness detection."""
+        snapshots = []
+        now = self.start_date
+        managed_tools = ["velero", "kasten-k10", "trident-protect"]
+        snapshot_classes = ["csi-hostpath-snapclass", "ocs-storagecluster-rbdplugin-snapclass", "ebs-snapclass"]
+
+        for volume_dict in self.volumes:
+            for _volume_name, volume in volume_dict.items():
+                namespace = volume.get("namespace", "default")
+                volume_claims = volume.get("volume_claims", {})
+                storageclass = volume.get("storage_class", "gp3-csi")
+
+                for vc_name in volume_claims:
+                    num_snaps = randint(1, 4)
+                    for i in range(num_snaps):
+                        age_days = randint(1, 180)
+                        creation = now - datetime.timedelta(days=age_days)
+                        snap_name = f"{vc_name}-snap-{creation.strftime('%Y%m%d')}-{i}"
+
+                        is_managed = randint(1, 10) <= 2
+                        is_orphaned = randint(1, 10) <= 2
+                        is_restored = randint(1, 10) <= 3
+
+                        labels = {}
+                        if is_managed:
+                            tool = managed_tools[randint(0, len(managed_tools) - 1)]
+                            if tool == "velero":
+                                labels["velero.io/backup-name"] = f"daily-{creation.strftime('%Y%m%d')}"
+                            elif tool == "kasten-k10":
+                                labels["k10.kasten.io/appName"] = "db-backup"
+                            else:
+                                labels["protect.trident.netapp.io/policy"] = "daily"
+
+                        snapshots.append(
+                            {
+                                "namespace": namespace,
+                                "snapshot_name": snap_name,
+                                "source_pvc_name": "" if is_orphaned else vc_name,
+                                "volume_snapshot_class": snapshot_classes[randint(0, len(snapshot_classes) - 1)],
+                                "storageclass": storageclass,
+                                "creation_timestamp": creation.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                                "restore_size_bytes": randint(1, 100) * GIGABYTE,
+                                "ready_to_use": "true",
+                                "source_pvc_exists": "false" if is_orphaned else "true",
+                                "restored_pvc_count": randint(1, 3) if is_restored else 0,
+                                "labels": labels,
+                            }
+                        )
+
+        # Add a few explicitly stale/never-restored snapshots for test coverage
+        if snapshots:
+            ns = snapshots[0]["namespace"]
+            old_date = (now - datetime.timedelta(days=120)).strftime("%Y-%m-%dT%H:%M:%SZ")
+            snapshots.append(
+                {
+                    "namespace": ns,
+                    "snapshot_name": "legacy-backup-never-restored",
+                    "source_pvc_name": "data-pvc-legacy",
+                    "volume_snapshot_class": snapshot_classes[0],
+                    "storageclass": "gp3-csi",
+                    "creation_timestamp": old_date,
+                    "restore_size_bytes": 50 * GIGABYTE,
+                    "ready_to_use": "true",
+                    "source_pvc_exists": "true",
+                    "restored_pvc_count": 0,
+                    "labels": {},
+                }
+            )
+
+        return snapshots
+
+    def _gen_snapshot_inventory_rows(self, **kwargs):
+        """Generate snapshot inventory rows (one per snapshot per interval)."""
+        for hour in self.hours:
+            start = hour.get("start")
+            end = hour.get("end")
+            for snap in self.snapshots:
+                row = self._init_data_row(start, end, **kwargs)
+                row = self._update_data(row, start, end, snapshot=snap, **kwargs)
+                yield row
+            break  # Snapshot inventory is point-in-time, emit once per generation
+
+    def _update_snapshot_data(self, row, start, end, **kwargs):
+        """Fill snapshot inventory row with snapshot data."""
+        snap = kwargs.get("snapshot", {})
+        data = {
+            "namespace": snap.get("namespace", ""),
+            "snapshot_name": snap.get("snapshot_name", ""),
+            "source_pvc_name": snap.get("source_pvc_name", ""),
+            "volume_snapshot_class": snap.get("volume_snapshot_class", ""),
+            "storageclass": snap.get("storageclass", ""),
+            "creation_timestamp": snap.get("creation_timestamp", ""),
+            "restore_size_bytes": snap.get("restore_size_bytes", 0),
+            "ready_to_use": snap.get("ready_to_use", "true"),
+            "source_pvc_exists": snap.get("source_pvc_exists", "true"),
+            "restored_pvc_count": snap.get("restored_pvc_count", 0),
+            "labels": json.dumps(snap.get("labels", {})),
         }
         row.update(data)
         return row

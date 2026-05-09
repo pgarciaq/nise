@@ -25,6 +25,7 @@ from nise.generators.ocp.ocp_generator import COST_OCP_REPORT_TYPE_TO_COLS  # no
 from nise.generators.ocp.ocp_generator import ROS_OCP_REPORT_TYPE_TO_COLS  # noqa: F401
 from nise.generators.ocp.ocp_generator import OCP_ROS_USAGE  # noqa: F401
 from nise.generators.ocp.ocp_generator import OCP_ROS_NAMESPACE_USAGE  # noqa: F401
+from nise.generators.ocp.ocp_generator import OCP_SNAPSHOT_INVENTORY  # noqa: F401
 from nise.generators.ocp.ocp_generator import OCP_STORAGE_USAGE  # noqa: F401
 from nise.generators.ocp.ocp_generator import OCP_VM_USAGE  # noqa: F401
 from nise.generators.ocp.ocp_generator import OCPGenerator  # noqa: F401

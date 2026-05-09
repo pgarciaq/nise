@@ -84,6 +84,7 @@ from nise.generators.ocp import COST_OCP_REPORT_TYPE_TO_COLS
 from nise.generators.ocp import ROS_OCP_REPORT_TYPE_TO_COLS
 from nise.generators.ocp import OCP_ROS_USAGE
 from nise.generators.ocp import OCP_ROS_NAMESPACE_USAGE
+from nise.generators.ocp import OCP_SNAPSHOT_INVENTORY
 from nise.generators.ocp import OCPGenerator
 from nise.manifest import aws_generate_manifest
 from nise.manifest import ocp_generate_manifest
@@ -972,7 +973,7 @@ def ocp_create_report(options):  # noqa: C901
                 report_type,
                 data[report_type],
             )
-            if report_type in (OCP_ROS_USAGE, OCP_ROS_NAMESPACE_USAGE):
+            if report_type in (OCP_ROS_USAGE, OCP_ROS_NAMESPACE_USAGE, OCP_SNAPSHOT_INVENTORY):
                 monthly_ros_files.append(month_output_file)
             else:
                 monthly_files.append(month_output_file)
@@ -993,7 +994,7 @@ def ocp_create_report(options):  # noqa: C901
                 original_file = monthly_ros_files[num_file]
                 current_file_number = total_file_count + num_file
 
-                # Check if this is a namespace file (contains 'ocp_ros_namespace_usage')
+                # Determine proper upload filename based on report type
                 if "ocp_ros_namespace_usage" in original_file:
                     basename = os.path.basename(original_file)
                     parts = basename.split("-")
@@ -1014,6 +1015,20 @@ def ocp_create_report(options):  # noqa: C901
                     temp_filename = (
                         f"{ocp_assembly_id}-ros-openshift-namespace-{yearmonth_part}.{current_file_number}.csv"
                     )
+                elif "ocp_snapshot_inventory" in original_file:
+                    basename = os.path.basename(original_file)
+                    parts = basename.split("-")
+                    if len(parts) >= 2:
+                        month_name = parts[0]
+                        year = parts[1]
+                        try:
+                            month_num = datetime.strptime(month_name, "%B").month
+                            yearmonth_part = f"{year}{month_num:02d}"
+                        except ValueError:
+                            yearmonth_part = f"{year}{datetime.now().month:02d}"
+                    else:
+                        yearmonth_part = f"{datetime.now().year}{datetime.now().month:02d}"
+                    temp_filename = f"cm-openshift-snapshot-inventory-{yearmonth_part}.{current_file_number}.csv"
                 else:
                     temp_filename = f"{ocp_assembly_id}_openshift_report.{current_file_number}.csv"
                 temp_ros_files[temp_filename] = create_temporary_copy(
