@@ -2031,6 +2031,159 @@ class OCPGeneratorTestCase(TestCase):
                 self.assertAlmostEqual(pod_data["accelerator_frame_buffer_usage_avg"], 3000.0)
         self.assertTrue(found, "mig-candidate-pod not found in ros_data")
 
+    def test_snapshot_inventory_generated_with_ros_ocp_info(self):
+        """Test that OCPGenerator with ros_ocp_info=True produces OCP_SNAPSHOT_INVENTORY data."""
+        from nise.generators.ocp.ocp_generator import OCP_SNAPSHOT_INVENTORY
+
+        generator = OCPGenerator(self.two_hours_ago, self.now, {}, ros_ocp_info=True)
+
+        self.assertIn(OCP_SNAPSHOT_INVENTORY, generator.ocp_report_generation)
+        self.assertTrue(hasattr(generator, "snapshots"))
+        self.assertIsInstance(generator.snapshots, list)
+        self.assertGreater(len(generator.snapshots), 0)
+
+    def test_snapshot_inventory_not_generated_without_ros_ocp_info(self):
+        """Test that OCPGenerator without ros_ocp_info does NOT produce snapshot data."""
+        from nise.generators.ocp.ocp_generator import OCP_SNAPSHOT_INVENTORY
+
+        generator = OCPGenerator(self.two_hours_ago, self.now, {})
+
+        self.assertNotIn(OCP_SNAPSHOT_INVENTORY, generator.ocp_report_generation)
+        self.assertFalse(hasattr(generator, "snapshots"))
+
+    def test_snapshot_inventory_csv_columns(self):
+        """Test that snapshot inventory output CSV has correct column count and header names."""
+        from nise.generators.ocp.ocp_generator import OCP_SNAPSHOT_INVENTORY, OCP_SNAPSHOT_INVENTORY_COLUMNS
+
+        generator = OCPGenerator(self.two_hours_ago, self.now, {}, ros_ocp_info=True)
+
+        rows = list(generator.generate_data(report_type=OCP_SNAPSHOT_INVENTORY))
+        self.assertGreater(len(rows), 0)
+
+        first_row = rows[0]
+        for col in OCP_SNAPSHOT_INVENTORY_COLUMNS:
+            self.assertIn(col, first_row, f"Missing column '{col}' in snapshot inventory row")
+
+        self.assertEqual(len(first_row), len(OCP_SNAPSHOT_INVENTORY_COLUMNS))
+
+    def test_snapshot_inventory_row_content(self):
+        """Test that snapshot inventory rows contain valid data."""
+        from nise.generators.ocp.ocp_generator import OCP_SNAPSHOT_INVENTORY
+
+        generator = OCPGenerator(self.two_hours_ago, self.now, {}, ros_ocp_info=True)
+
+        rows = list(generator.generate_data(report_type=OCP_SNAPSHOT_INVENTORY))
+        for row in rows:
+            self.assertIn(row["ready_to_use"], ("true", "false"))
+            self.assertIn(row["source_pvc_exists"], ("true", "false"))
+            self.assertIsInstance(row["restore_size_bytes"], int)
+            self.assertGreater(row["restore_size_bytes"], 0)
+            self.assertIsInstance(row["restored_pvc_count"], int)
+            self.assertGreaterEqual(row["restored_pvc_count"], 0)
+            self.assertTrue(len(row["namespace"]) > 0)
+            self.assertTrue(len(row["snapshot_name"]) > 0)
+
+    def test_snapshot_inventory_categorized_as_ros_report(self):
+        """Test that OCP_SNAPSHOT_INVENTORY is in ROS_OCP_REPORT_TYPE_TO_COLS."""
+        from nise.generators.ocp.ocp_generator import (
+            OCP_SNAPSHOT_INVENTORY,
+            OCP_SNAPSHOT_INVENTORY_COLUMNS,
+            ROS_OCP_REPORT_TYPE_TO_COLS,
+        )
+
+        self.assertIn(OCP_SNAPSHOT_INVENTORY, ROS_OCP_REPORT_TYPE_TO_COLS)
+        self.assertEqual(
+            ROS_OCP_REPORT_TYPE_TO_COLS[OCP_SNAPSHOT_INVENTORY],
+            OCP_SNAPSHOT_INVENTORY_COLUMNS,
+        )
+
+    def test_gen_snapshots_includes_stale_entry(self):
+        """Test that _gen_snapshots always includes at least one explicitly stale snapshot."""
+        generator = OCPGenerator(self.two_hours_ago, self.now, {}, ros_ocp_info=True)
+
+        stale_snaps = [s for s in generator.snapshots if s["snapshot_name"] == "legacy-backup-never-restored"]
+        self.assertEqual(len(stale_snaps), 1)
+        stale = stale_snaps[0]
+        self.assertEqual(stale["source_pvc_name"], "data-pvc-legacy")
+        self.assertEqual(stale["restored_pvc_count"], 0)
+
+    def test_static_yaml_snapshot_support(self):
+        """Test that snapshots from static YAML produce deterministic output."""
+        from nise.generators.ocp.ocp_generator import OCP_SNAPSHOT_INVENTORY
+
+        attributes = {
+            "nodes": [
+                {
+                    "node": "static-node-1",
+                    "node_name": "worker-0",
+                    "cpu_cores": 4,
+                    "memory_gig": 16,
+                    "namespaces": {
+                        "prod": {
+                            "pods": [
+                                {
+                                    "pod": "pod-1",
+                                    "pod_name": "web",
+                                    "cpu_request": 1,
+                                    "mem_request_gig": 2,
+                                    "cpu_limit": 2,
+                                    "mem_limit_gig": 4,
+                                }
+                            ],
+                            "volumes": [
+                                {
+                                    "volume_name": "vol-1",
+                                    "volume_request_gig": 50,
+                                    "volume_claims": [
+                                        {"volume_claim_name": "data-pvc", "pod_name": "web", "capacity_gig": 50}
+                                    ],
+                                }
+                            ],
+                        }
+                    },
+                }
+            ],
+            "snapshots": [
+                {
+                    "snapshot_name": "db-daily-backup",
+                    "namespace": "prod",
+                    "source_pvc_name": "postgres-data",
+                    "storageclass": "gp3",
+                    "creation_days_ago": 120,
+                    "source_pvc_exists": True,
+                    "restored_pvc_count": 0,
+                    "labels": {"velero.io/backup-name": "daily-schedule"},
+                },
+                {
+                    "snapshot_name": "orphan-snap",
+                    "namespace": "prod",
+                    "source_pvc_name": "",
+                    "source_pvc_exists": False,
+                    "creation_days_ago": 60,
+                },
+            ],
+        }
+
+        generator = OCPGenerator(self.two_hours_ago, self.now, attributes, ros_ocp_info=True)
+
+        self.assertEqual(len(generator.snapshots), 2)
+        self.assertEqual(generator.snapshots[0]["snapshot_name"], "db-daily-backup")
+        self.assertEqual(generator.snapshots[0]["namespace"], "prod")
+        self.assertEqual(generator.snapshots[0]["source_pvc_name"], "postgres-data")
+        self.assertEqual(generator.snapshots[0]["storageclass"], "gp3")
+        self.assertEqual(generator.snapshots[0]["restored_pvc_count"], 0)
+        self.assertEqual(generator.snapshots[0]["labels"], {"velero.io/backup-name": "daily-schedule"})
+        self.assertEqual(generator.snapshots[0]["source_pvc_exists"], "true")
+
+        self.assertEqual(generator.snapshots[1]["snapshot_name"], "orphan-snap")
+        self.assertEqual(generator.snapshots[1]["source_pvc_exists"], "false")
+        self.assertEqual(generator.snapshots[1]["source_pvc_name"], "")
+
+        rows = list(generator.generate_data(report_type=OCP_SNAPSHOT_INVENTORY))
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0]["snapshot_name"], "db-daily-backup")
+        self.assertEqual(rows[1]["snapshot_name"], "orphan-snap")
+
 
 class GenRosGpuMetricsTest(TestCase):
     """Tests for the _gen_ros_gpu_metrics function with overrides."""
