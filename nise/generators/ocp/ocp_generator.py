@@ -588,6 +588,7 @@ class OCPGenerator(AbstractGenerator):
     ):
         """Initialize the generator."""
         self._nodes = None
+        self._attributes = attributes or {}
         self.ros_ocp_info = ros_ocp_info
         self.constant_values_ros_ocp = constant_values_ros_ocp
         self.ros_only = ros_only
@@ -1954,7 +1955,15 @@ class OCPGenerator(AbstractGenerator):
         return row
 
     def _gen_snapshots(self):
-        """Generate fake VolumeSnapshot inventory data for testing snapshot staleness detection."""
+        """Generate fake VolumeSnapshot inventory data for testing snapshot staleness detection.
+
+        If `self._attributes` contains a "snapshots" key, uses that list of dicts
+        for deterministic test data (static YAML support). Otherwise, generates
+        random snapshot data from volumes.
+        """
+        if self._attributes and "snapshots" in self._attributes:
+            return self._gen_snapshots_from_static(self._attributes["snapshots"])
+
         snapshots = []
         now = self.start_date
         managed_tools = ["velero", "kasten-k10", "trident-protect"]
@@ -2023,6 +2032,49 @@ class OCPGenerator(AbstractGenerator):
                 }
             )
 
+        return snapshots
+
+    def _gen_snapshots_from_static(self, static_snapshots):
+        """Generate snapshot inventory from static YAML data for deterministic test output.
+
+        Each entry in static_snapshots should be a dict with keys matching
+        the snapshot schema. Missing keys get defaults:
+          - snapshot_name: required
+          - namespace: defaults to "default"
+          - source_pvc_name: defaults to ""
+          - volume_snapshot_class: defaults to "csi-hostpath-snapclass"
+          - storageclass: defaults to "gp3-csi"
+          - creation_days_ago: int, converted to creation_timestamp (default: 30)
+          - creation_timestamp: explicit ISO timestamp (overrides creation_days_ago)
+          - restore_size_bytes: int (default: 10 * GIGABYTE)
+          - ready_to_use: "true"/"false" (default: "true")
+          - source_pvc_exists: "true"/"false" (default: "true")
+          - restored_pvc_count: int (default: 0)
+          - labels: dict (default: {})
+        """
+        snapshots = []
+        now = self.start_date
+        for entry in static_snapshots:
+            creation_ts = entry.get("creation_timestamp")
+            if not creation_ts:
+                days_ago = entry.get("creation_days_ago", 30)
+                creation_ts = (now - datetime.timedelta(days=days_ago)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+            snapshots.append(
+                {
+                    "namespace": entry.get("namespace", "default"),
+                    "snapshot_name": entry["snapshot_name"],
+                    "source_pvc_name": entry.get("source_pvc_name", ""),
+                    "volume_snapshot_class": entry.get("volume_snapshot_class", "csi-hostpath-snapclass"),
+                    "storageclass": entry.get("storageclass", "gp3-csi"),
+                    "creation_timestamp": creation_ts,
+                    "restore_size_bytes": entry.get("restore_size_bytes", 10 * GIGABYTE),
+                    "ready_to_use": str(entry.get("ready_to_use", "true")).lower(),
+                    "source_pvc_exists": str(entry.get("source_pvc_exists", "true")).lower(),
+                    "restored_pvc_count": entry.get("restored_pvc_count", 0),
+                    "labels": entry.get("labels", {}),
+                }
+            )
         return snapshots
 
     def _gen_snapshot_inventory_rows(self, **kwargs):
