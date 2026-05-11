@@ -1766,11 +1766,11 @@ class OCPGeneratorTestCase(TestCase):
             with self.subTest(column=col):
                 self.assertIn(col, OCP_ROS_USAGE_COLUMN)
 
-    def test_ros_usage_column_gpu_columns_after_workload_pod_count(self):
-        """Test that GPU columns appear after workload_pod_count in the ROS CSV header."""
-        wpc_idx = OCP_ROS_USAGE_COLUMN.index("workload_pod_count")
+    def test_ros_usage_column_gpu_columns_after_replica_columns(self):
+        """Test that GPU columns appear after available_replicas in the ROS CSV header."""
+        avail_idx = OCP_ROS_USAGE_COLUMN.index("available_replicas")
         model_idx = OCP_ROS_USAGE_COLUMN.index("accelerator_model_name")
-        self.assertEqual(model_idx, wpc_idx + 1)
+        self.assertEqual(model_idx, avail_idx + 1)
 
     def test_ros_data_gpu_pod_has_gpu_metrics(self):
         """Test that ROS data for GPU-equipped pods includes GPU profiling metrics."""
