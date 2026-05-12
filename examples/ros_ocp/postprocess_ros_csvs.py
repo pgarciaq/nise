@@ -83,10 +83,13 @@ def scenario_for_container(namespace: str, container: str) -> str:
 # Explicit scenario overrides for known test pods from the example YAML.
 # This guarantees every classification path is covered in E2E tests.
 _GPU_SCENARIO_OVERRIDES = {
-    ("ml-training", "llm-finetune"): "well_utilized",
+    ("ml-training", "llm-finetune"): "underutilized",
     ("ml-training", "abandoned-notebook"): "idle",
+    ("ml-training", "data-preprocessor"): "underutilized",
     ("ml-inference", "embedding-server"): "underutilized",
-    # legacy-model gets "no_profiling" via the Tier 2 path automatically.
+    # legacy-vision-model / recommendation-model: V100 Tier 2 → no_profiling automatically.
+    # gpu-worker-1 (A100): 2 underutilized + 1 idle → 2/2 eligible = 100% candidates → time-slicing fires.
+    # gpu-worker-2 (A10G): 1 underutilized / 1 eligible = 100% → time-slicing fires.
 }
 
 
@@ -335,7 +338,7 @@ def _find_ros_container_files(input_dir):
         if container_files:
             return sorted(container_files)
 
-    for pattern in ("*-ocp_ros_usage-*.csv", "*_openshift_report.*.csv"):
+    for pattern in ("*ocp_ros_usage*.csv", "*-ocp_ros_usage-*.csv", "*_openshift_report.*.csv"):
         hits = sorted(glob.glob(os.path.join(input_dir, pattern)))
         container_hits = [h for h in hits if "namespace" not in os.path.basename(h)]
         if container_hits:
