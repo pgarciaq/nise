@@ -31,46 +31,56 @@ echo ""
 rm -rf "${WORK_DIR}"
 mkdir -p "${NISE_OUTPUT}" "${PROCESSED}"
 
-# Step 1: Generate raw data with nise
+# Step 1: Generate raw data with nise.
+# Run nise from within NISE_OUTPUT since -w writes to CWD.
 echo "[1/4] Running nise to generate OCP + ROS data..."
-nise report ocp \
-    --static-report-file "${SCRIPT_DIR}/ocp_static_data.yml" \
-    --ocp-cluster-id "${CLUSTER_UUID}" \
-    -w --ros-ocp-info
+(
+    cd "${NISE_OUTPUT}"
+    nise report ocp \
+        --static-report-file "${SCRIPT_DIR}/ocp_static_data.yml" \
+        --ocp-cluster-id "${CLUSTER_UUID}" \
+        -w --ros-ocp-info
+)
+echo "       Generated $(find "${NISE_OUTPUT}" -name '*.csv' | wc -l) CSV files"
 
-# nise with -w writes to CWD with Month-Year-UUID-type.csv naming
-mv *"${CLUSTER_UUID}"*.csv "${NISE_OUTPUT}/" 2>/dev/null || true
-# Also handle Month-Year-UUID-type pattern (nise's actual naming convention)
-mv *-"${CLUSTER_UUID}"-*.csv "${NISE_OUTPUT}/" 2>/dev/null || true
-echo "       Generated $(ls "${NISE_OUTPUT}"/*.csv 2>/dev/null | wc -l) CSV files"
-
-# Step 2: Post-process ROS CSVs for realistic usage patterns
+# Step 2: Post-process ROS CSVs for realistic usage patterns.
+# The postprocess script also copies all non-ROS files to PROCESSED.
 echo "[2/4] Post-processing ROS CSVs..."
 python3 "${SCRIPT_DIR}/postprocess_ros_csvs.py" \
     "${NISE_OUTPUT}" "${PROCESSED}" "${CLUSTER_UUID}"
 
 # Step 3: Build manifest.json
 echo "[3/4] Creating manifest.json..."
-MONTH_PREFIX=$(ls "${PROCESSED}"/*ocp_pod_usage*.csv 2>/dev/null | head -1 | xargs basename | cut -d- -f1,2)
-# e.g., "April-2026"
 
-OCP_FILES=$(cd "${PROCESSED}" && ls *ocp_pod_usage*.csv *ocp_storage_usage*.csv \
-    *ocp_node_label*.csv *ocp_namespace_label*.csv \
-    *ocp_vm_usage*.csv *ocp_gpu_usage*.csv 2>/dev/null | sort)
+# Collect OCP cost/usage files (for Koku listener processing)
+OCP_FILES=$(cd "${PROCESSED}" && ls \
+    *ocp_pod_usage*.csv \
+    *ocp_storage_usage*.csv \
+    *ocp_node_label*.csv \
+    *ocp_namespace_label*.csv \
+    *ocp_vm_usage*.csv \
+    *ocp_gpu_usage*.csv \
+    2>/dev/null | sort || true)
 
-ROS_FILES=$(cd "${PROCESSED}" && ls *ocp_ros_usage-*.csv *ocp_ros_namespace_usage*.csv 2>/dev/null | sort)
+# Collect ROS files (for ros-ocp-backend processor).
+# Includes: container ROS, namespace ROS, storage (PVC), and snapshot inventory.
+ROS_FILES=$(cd "${PROCESSED}" && ls \
+    *ocp_ros_usage*.csv \
+    *ocp_ros_namespace_usage*.csv \
+    *ocp_storage_usage*.csv \
+    *ocp_snapshot_inventory*.csv \
+    2>/dev/null | sort | uniq || true)
 
 TODAY=$(date +%Y-%m-%d)
-# Extract start/end from the static YAML
 START_DATE=$(grep 'start_date:' "${SCRIPT_DIR}/ocp_static_data.yml" | head -1 | awk '{print $2}')
 END_DATE=$(grep 'end_date:' "${SCRIPT_DIR}/ocp_static_data.yml" | head -1 | awk '{print $2}')
 
 python3 -c "
-import json, sys
+import json, uuid
 ocp = [f.strip() for f in '''${OCP_FILES}'''.strip().split('\n') if f.strip()]
 ros = [f.strip() for f in '''${ROS_FILES}'''.strip().split('\n') if f.strip()]
 manifest = {
-    'uuid': '$(python3 -c "import uuid; print(uuid.uuid4())")',
+    'uuid': str(uuid.uuid4()),
     'cluster_id': '${CLUSTER_UUID}',
     'version': '${TODAY}',
     'date': '${TODAY}',
@@ -79,13 +89,14 @@ manifest = {
     'files': ocp,
     'resource_optimization_files': ros,
 }
-json.dump(manifest, open('${PROCESSED}/manifest.json', 'w'), indent=2)
+with open('${PROCESSED}/manifest.json', 'w') as f:
+    json.dump(manifest, f, indent=2)
 print(f'       {len(ocp)} OCP files, {len(ros)} ROS files')
 "
 
-# Step 4: Create tarball (strip ./ prefix to avoid filename mismatch)
+# Step 4: Create tarball (no ./ prefix — filenames must match manifest exactly)
 echo "[4/4] Creating tarball..."
-tar czf "${WORK_DIR}/upload.tar.gz" -C "${PROCESSED}" --transform='s|^\./||' .
+(cd "${PROCESSED}" && tar czf "${WORK_DIR}/upload.tar.gz" *)
 
 SIZE=$(du -h "${WORK_DIR}/upload.tar.gz" | cut -f1)
 echo ""
@@ -93,6 +104,6 @@ echo "=== Done ==="
 echo "Tarball: ${WORK_DIR}/upload.tar.gz (${SIZE})"
 echo ""
 echo "To upload to a cost-onprem deployment:"
-echo "  curl -X POST -H 'x-rh-identity: \$IDENTITY' \\"
+echo "  curl -X POST -H 'Authorization: Bearer \$TOKEN' \\"
 echo "    -F 'file=@${WORK_DIR}/upload.tar.gz;type=application/vnd.redhat.hccm.tar+tgz' \\"
-echo "    http://INGRESS_HOST:8081/api/ingress/v1/upload"
+echo "    https://GATEWAY_HOST/api/ingress/v1/upload"
