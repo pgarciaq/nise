@@ -1,40 +1,36 @@
 ---
-# OCP cluster topology for generating ROS (Resource Optimization Service) test data.
+# Comprehensive OCP static data for generating ALL data types needed by
+# Cost Management (Koku) and Resource Optimization (ros-ocp-backend).
+#
+# Covers: pod usage, storage/PVC, GPU metrics, ROS container-level data,
+#         snapshot inventory, and namespace labels.
 #
 # Use with:
-#   nise report ocp --static-report-file ocp_static_data.yml \
-#     --ocp-cluster-id <CLUSTER_UUID> -w --ros-ocp-info
+#   nise report ocp --static-report-file examples/ros_ocp/ocp_static_data.yml \
+#     --ocp-cluster-id <YOUR-CLUSTER-UUID> --ros-ocp-info --daily-reports \
+#     --insights-upload /tmp/nise_ros_output
 #
-# The named pods here define CPU/memory requests and limits.  Nise also
-# generates additional random containers to fill each namespace, which is
-# fine — the post-processing script (postprocess_ros_csvs.py) normalises
-# all usage values into realistic scenarios regardless of container origin.
+# For ROS-only mode (generates only ROS CSVs + storage):
+#   nise report ocp --static-report-file examples/ros_ocp/ocp_static_data.yml \
+#     --ocp-cluster-id <YOUR-CLUSTER-UUID> --ros-ocp-info --ros-only \
+#     --daily-reports --insights-upload /tmp/nise_ros_output
 #
-# Adjust start_date / end_date to your testing window. The native engine
-# needs at least 3 days of data to produce stable recommendations.
-#
-# GPU data
-# --------
-# Nise randomly attaches GPUs to some pods.  The profiling metrics it
-# generates are uniformly random and do NOT produce deterministic GPU
-# classification scenarios (idle, underutilized, well_utilized, etc.).
-#
-# After generating, run postprocess_ros_csvs.py to replace the GPU
-# profiling columns with values that match known classification
-# thresholds.  See postprocess_ros_csvs.py for the full list of GPU
-# scenarios and how they are assigned.
+# Data window: 30+ days to ensure medium_term recommendations and fleet summary.
+# Adjust start_date/end_date to your desired range.
 generators:
   - OCPGenerator:
-      start_date: 2026-04-10
-      end_date: 2026-04-25
+      start_date: 2026-04-01
+      end_date: 2026-05-11
       nodes:
+        # --- Worker Node 1: Production workloads with PVCs ---
         - node:
-          node_name: worker-1
-          node_labels: "label_environment:production|label_app:web-server"
+          node_name: worker-prod-1
+          node_labels: "label_environment:production|label_role:compute|label_region:us-east-1"
           cpu_cores: 8
           memory_gig: 32
+          resource_id: node-prod-1-id
           namespaces:
-            koku:
+            cost-management:
               pods:
                 - pod:
                   pod_name: koku-api
@@ -43,6 +39,8 @@ generators:
                   cpu_limit: 1000
                   mem_limit_gig: 4
                   replica_count: 3
+                  labels: label_app:koku|label_component:api|label_environment:production
+                  workload: deployment
                 - pod:
                   pod_name: koku-worker
                   cpu_request: 250
@@ -50,35 +48,86 @@ generators:
                   cpu_limit: 500
                   mem_limit_gig: 2
                   replica_count: 2
-            cost-management:
-              pods:
+                  labels: label_app:koku|label_component:worker|label_environment:production
+                  workload: deployment
                 - pod:
-                  pod_name: cost-model-worker
-                  cpu_request: 200
-                  mem_request_gig: 0.5
-                  cpu_limit: 400
-                  mem_limit_gig: 1
+                  pod_name: masu-processor
+                  cpu_request: 300
+                  mem_request_gig: 1.5
+                  cpu_limit: 600
+                  mem_limit_gig: 3
+                  labels: label_app:koku|label_component:masu|label_environment:production
+                  workload: deployment
+              volumes:
+                - volume:
+                  volume_name: pvc-koku-db
+                  storage_class: gp3-csi
+                  volume_request_gig: 50
+                  labels: label_app:koku|label_component:database|label_storageclass:gp3-csi
+                  volume_claims:
+                  - volume_claim:
+                    volume_claim_name: koku-db-data
+                    pod_name: koku-api
+                    labels: label_app:koku|label_component:database|label_storageclass:gp3-csi
+                    capacity_gig: 50
             monitoring:
               pods:
                 - pod:
-                  pod_name: prometheus
+                  pod_name: prometheus-server
                   cpu_request: 1000
                   mem_request_gig: 4
                   cpu_limit: 2000
                   mem_limit_gig: 8
                   replica_count: 2
+                  labels: label_app:prometheus|label_component:server|label_environment:production
+                  workload: statefulset
                 - pod:
                   pod_name: grafana
                   cpu_request: 100
-                  mem_request_gig: 0.25
+                  mem_request_gig: 0.5
                   cpu_limit: 200
+                  mem_limit_gig: 1
+                  labels: label_app:grafana|label_environment:production
+                  workload: deployment
+                - pod:
+                  pod_name: alertmanager
+                  cpu_request: 50
+                  mem_request_gig: 0.25
+                  cpu_limit: 100
                   mem_limit_gig: 0.5
-                  replica_count: 1
+                  labels: label_app:alertmanager|label_environment:production
+                  workload: statefulset
+              volumes:
+                - volume:
+                  volume_name: pvc-prometheus-data
+                  storage_class: gp3-csi
+                  volume_request_gig: 100
+                  labels: label_app:prometheus|label_storageclass:gp3-csi
+                  volume_claims:
+                  - volume_claim:
+                    volume_claim_name: prometheus-tsdb
+                    pod_name: prometheus-server
+                    labels: label_app:prometheus|label_storageclass:gp3-csi
+                    capacity_gig: 100
+                - volume:
+                  volume_name: pvc-grafana-data
+                  storage_class: gp2
+                  volume_request_gig: 10
+                  labels: label_app:grafana|label_storageclass:gp2
+                  volume_claims:
+                  - volume_claim:
+                    volume_claim_name: grafana-dashboards
+                    pod_name: grafana
+                    labels: label_app:grafana|label_storageclass:gp2
+                    capacity_gig: 10
+
+        # --- Worker Node 2: Staging + Analytics ---
         - node:
-          node_name: worker-2
-          node_labels: "label_environment:staging|label_app:backend"
+          node_name: worker-staging-1
+          node_labels: "label_environment:staging|label_role:compute|label_region:us-east-1"
           cpu_cores: 4
           memory_gig: 16
+          resource_id: node-staging-1-id
           namespaces:
             staging:
               pods:
@@ -88,19 +137,76 @@ generators:
                   mem_request_gig: 1
                   cpu_limit: 600
                   mem_limit_gig: 2
+                  labels: label_app:api|label_environment:staging|label_version:v2
+                  workload: deployment
                 - pod:
                   pod_name: celery-worker
                   cpu_request: 200
                   mem_request_gig: 0.5
                   cpu_limit: 400
                   mem_limit_gig: 1
-        # GPU node — nise assigns random GPU metrics; postprocess_ros_csvs.py
-        # overwrites them with deterministic scenario-appropriate values.
+                  replica_count: 3
+                  labels: label_app:celery|label_environment:staging
+                  workload: deployment
+                - pod:
+                  pod_name: redis-cache
+                  cpu_request: 100
+                  mem_request_gig: 0.5
+                  cpu_limit: 200
+                  mem_limit_gig: 1
+                  labels: label_app:redis|label_environment:staging
+                  workload: statefulset
+              volumes:
+                - volume:
+                  volume_name: pvc-redis-data
+                  storage_class: gp2
+                  volume_request_gig: 5
+                  labels: label_app:redis|label_storageclass:gp2
+                  volume_claims:
+                  - volume_claim:
+                    volume_claim_name: redis-aof
+                    pod_name: redis-cache
+                    labels: label_app:redis|label_storageclass:gp2
+                    capacity_gig: 5
+            analytics:
+              pods:
+                - pod:
+                  pod_name: spark-driver
+                  cpu_request: 2000
+                  mem_request_gig: 8
+                  cpu_limit: 4000
+                  mem_limit_gig: 16
+                  labels: label_app:spark|label_component:driver|label_environment:staging
+                  workload: deployment
+                - pod:
+                  pod_name: spark-executor
+                  cpu_request: 1000
+                  mem_request_gig: 4
+                  cpu_limit: 2000
+                  mem_limit_gig: 8
+                  replica_count: 4
+                  labels: label_app:spark|label_component:executor|label_environment:staging
+                  workload: replicaset
+              volumes:
+                - volume:
+                  volume_name: pvc-spark-scratch
+                  storage_class: gp3-csi
+                  volume_request_gig: 200
+                  labels: label_app:spark|label_storageclass:gp3-csi
+                  volume_claims:
+                  - volume_claim:
+                    volume_claim_name: spark-tmp
+                    pod_name: spark-driver
+                    labels: label_app:spark|label_storageclass:gp3-csi
+                    capacity_gig: 200
+
+        # --- GPU Node 1: ML Training (A100) ---
         - node:
           node_name: gpu-worker-1
-          node_labels: "label_environment:production|label_accelerator:nvidia"
+          node_labels: "label_environment:production|label_role:gpu|label_accelerator:nvidia-a100"
           cpu_cores: 64
           memory_gig: 512
+          resource_id: gpu-node-1-id
           namespaces:
             ml-training:
               pods:
@@ -110,6 +216,19 @@ generators:
                   mem_request_gig: 64
                   cpu_limit: 16000
                   mem_limit_gig: 128
+                  labels: label_app:llm|label_component:finetune|label_environment:production
+                  workload: deployment
+                  gpus:
+                    - gpu_model: A100
+                      gpu_memory_capacity_mib: 81920
+                - pod:
+                  pod_name: data-preprocessor
+                  cpu_request: 4000
+                  mem_request_gig: 32
+                  cpu_limit: 8000
+                  mem_limit_gig: 64
+                  labels: label_app:data-pipeline|label_environment:production
+                  workload: deployment
                   gpus:
                     - gpu_model: A100
                       gpu_memory_capacity_mib: 81920
@@ -119,9 +238,32 @@ generators:
                   mem_request_gig: 16
                   cpu_limit: 4000
                   mem_limit_gig: 32
+                  labels: label_app:jupyter|label_environment:production|label_user:researcher1
+                  workload: deployment
                   gpus:
                     - gpu_model: A100
                       gpu_memory_capacity_mib: 40960
+              volumes:
+                - volume:
+                  volume_name: pvc-training-data
+                  storage_class: gp3-csi
+                  volume_request_gig: 500
+                  labels: label_app:ml-training|label_storageclass:gp3-csi
+                  volume_claims:
+                  - volume_claim:
+                    volume_claim_name: training-datasets
+                    pod_name: llm-finetune
+                    labels: label_app:ml-training|label_storageclass:gp3-csi
+                    capacity_gig: 500
+
+        # --- GPU Node 2: ML Inference (V100 + A10G) ---
+        - node:
+          node_name: gpu-worker-2
+          node_labels: "label_environment:production|label_role:gpu|label_accelerator:nvidia-mixed"
+          cpu_cores: 32
+          memory_gig: 256
+          resource_id: gpu-node-2-id
+          namespaces:
             ml-inference:
               pods:
                 - pod:
@@ -130,15 +272,105 @@ generators:
                   mem_request_gig: 32
                   cpu_limit: 8000
                   mem_limit_gig: 64
+                  labels: label_app:embedding|label_component:server|label_environment:production
+                  workload: deployment
                   gpus:
-                    - gpu_model: A100
-                      gpu_memory_capacity_mib: 81920
+                    - gpu_model: A10G
+                      gpu_memory_capacity_mib: 24576
                 - pod:
-                  pod_name: legacy-model
-                  cpu_request: 4000
+                  pod_name: recommendation-model
+                  cpu_request: 2000
                   mem_request_gig: 16
-                  cpu_limit: 8000
+                  cpu_limit: 4000
                   mem_limit_gig: 32
+                  replica_count: 2
+                  labels: label_app:recommendation|label_environment:production
+                  workload: deployment
                   gpus:
                     - gpu_model: V100
                       gpu_memory_capacity_mib: 16384
+                - pod:
+                  pod_name: legacy-vision-model
+                  cpu_request: 2000
+                  mem_request_gig: 8
+                  cpu_limit: 4000
+                  mem_limit_gig: 16
+                  labels: label_app:vision|label_environment:production|label_status:deprecated
+                  workload: deployment
+                  gpus:
+                    - gpu_model: V100
+                      gpu_memory_capacity_mib: 16384
+              volumes:
+                - volume:
+                  volume_name: pvc-model-cache
+                  storage_class: gp3-csi
+                  volume_request_gig: 100
+                  labels: label_app:ml-inference|label_storageclass:gp3-csi
+                  volume_claims:
+                  - volume_claim:
+                    volume_claim_name: model-weights
+                    pod_name: embedding-server
+                    labels: label_app:ml-inference|label_storageclass:gp3-csi
+                    capacity_gig: 100
+
+        # --- Worker Node 3: Platform services ---
+        - node:
+          node_name: worker-platform-1
+          node_labels: "label_environment:production|label_role:platform|label_region:us-east-1"
+          cpu_cores: 8
+          memory_gig: 32
+          resource_id: node-platform-1-id
+          namespaces:
+            openshift-ingress:
+              pods:
+                - pod:
+                  pod_name: router-default
+                  cpu_request: 500
+                  mem_request_gig: 1
+                  cpu_limit: 1000
+                  mem_limit_gig: 2
+                  replica_count: 2
+                  labels: label_app:router|label_environment:production
+                  workload: deployment
+            openshift-logging:
+              pods:
+                - pod:
+                  pod_name: elasticsearch
+                  cpu_request: 2000
+                  mem_request_gig: 8
+                  cpu_limit: 4000
+                  mem_limit_gig: 16
+                  replica_count: 3
+                  labels: label_app:elasticsearch|label_environment:production
+                  workload: statefulset
+                - pod:
+                  pod_name: fluentd
+                  cpu_request: 100
+                  mem_request_gig: 0.5
+                  cpu_limit: 200
+                  mem_limit_gig: 1
+                  labels: label_app:fluentd|label_environment:production
+                  workload: daemonset
+              volumes:
+                - volume:
+                  volume_name: pvc-elasticsearch-data
+                  storage_class: gp3-csi
+                  volume_request_gig: 200
+                  labels: label_app:elasticsearch|label_storageclass:gp3-csi
+                  volume_claims:
+                  - volume_claim:
+                    volume_claim_name: es-data-0
+                    pod_name: elasticsearch
+                    labels: label_app:elasticsearch|label_storageclass:gp3-csi
+                    capacity_gig: 200
+            kube-system:
+              pods:
+                - pod:
+                  pod_name: coredns
+                  cpu_request: 100
+                  mem_request_gig: 0.17
+                  cpu_limit: 200
+                  mem_limit_gig: 0.34
+                  replica_count: 2
+                  labels: label_app:coredns|label_environment:production
+                  workload: deployment

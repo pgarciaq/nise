@@ -274,6 +274,7 @@ ROS_OCP_REPORT_TYPE_TO_COLS = {
     OCP_ROS_USAGE: OCP_ROS_USAGE_COLUMN,
     OCP_ROS_NAMESPACE_USAGE: OCP_ROS_NAMESPACE_USAGE_COLUMN,
     OCP_SNAPSHOT_INVENTORY: OCP_SNAPSHOT_INVENTORY_COLUMNS,
+    OCP_STORAGE_USAGE: OCP_STORAGE_COLUMNS,
 }
 
 OCP_REPORT_TYPE_TO_COLS = COST_OCP_REPORT_TYPE_TO_COLS | ROS_OCP_REPORT_TYPE_TO_COLS
@@ -660,6 +661,11 @@ class OCPGenerator(AbstractGenerator):
             if self.ros_ocp_info:
                 self.snapshots = self._gen_snapshots()
                 self.ocp_report_generation.update(snapshot_report)
+                if self.volumes:
+                    self.ocp_report_generation[OCP_STORAGE_USAGE] = {
+                        "_generate_hourly_data": self._gen_hourly_storage_usage,
+                        "_update_data": self._update_storage_data,
+                    }
         else:
             self.ocp_report_generation = {
                 OCP_POD_USAGE: {
