@@ -38,8 +38,10 @@ nise report ocp \
     --ocp-cluster-id "${CLUSTER_UUID}" \
     -w --ros-ocp-info
 
-# nise writes to CWD — move files to our work directory
+# nise with -w writes to CWD with Month-Year-UUID-type.csv naming
 mv *"${CLUSTER_UUID}"*.csv "${NISE_OUTPUT}/" 2>/dev/null || true
+# Also handle Month-Year-UUID-type pattern (nise's actual naming convention)
+mv *-"${CLUSTER_UUID}"-*.csv "${NISE_OUTPUT}/" 2>/dev/null || true
 echo "       Generated $(ls "${NISE_OUTPUT}"/*.csv 2>/dev/null | wc -l) CSV files"
 
 # Step 2: Post-process ROS CSVs for realistic usage patterns

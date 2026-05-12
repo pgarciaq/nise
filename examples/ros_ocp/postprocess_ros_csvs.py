@@ -7,9 +7,9 @@ say "increase dramatically."  This script replaces the usage columns with
 values that create a realistic mix of recommendation scenarios:
 
   CPU/Memory scenarios (all containers):
-  - Over-provisioned  (40%): usage ~30-50% of request  → "decrease request"
-  - Under-provisioned (30%): usage ~120-200% of request → "increase request"
-  - Well-sized        (20%): usage ~70-95% of request   → minor / no change
+  - Over-provisioned  (60%): usage ~30-50% of request  → "decrease request" (positive savings)
+  - Under-provisioned (15%): usage ~120-200% of request → "increase request"
+  - Well-sized        (15%): usage ~70-95% of request   → minor / no change
   - Memory-pressure   (10%): normal CPU, memory near limit, OOM events
 
   GPU scenarios (containers that have a non-empty accelerator_model_name):
@@ -67,12 +67,16 @@ GPU_FB_CAPACITY = {
 
 
 def scenario_for_container(namespace: str, container: str) -> str:
-    """Deterministically assign a CPU/memory scenario based on namespace/container hash."""
+    """Deterministically assign a CPU/memory scenario based on namespace/container hash.
+
+    Distribution favors over-provisioned (60%) to produce net positive fleet
+    savings (recommendations reduce cost for the majority of workloads).
+    """
     h = hashlib.md5(f"{namespace}/{container}".encode()).hexdigest()
     v = int(h[:8], 16) % 100
-    if v < 40:
+    if v < 60:
         return "over_provisioned"
-    elif v < 70:
+    elif v < 75:
         return "under_provisioned"
     elif v < 90:
         return "well_sized"
