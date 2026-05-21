@@ -415,6 +415,7 @@ GPU_MODELS = (
     "A30",
     "L40S",
     "A10",
+    "A10G",
 )
 
 GPU_MEMORY_CAPACITY = {
@@ -425,12 +426,13 @@ GPU_MEMORY_CAPACITY = {
     "A30": 24576,
     "L40S": 49152,
     "A10": 24576,
+    "A10G": 24576,
 }
 
 GPU_VENDOR = "nvidia_com_gpu"
 
 # Tier 1: Turing+ datacenter GPUs that support DCGM PROF_ metrics
-GPU_PROFILING_SUPPORTED = {"Tesla T4", "A100", "H100", "A30", "L40S", "A10"}
+GPU_PROFILING_SUPPORTED = {"Tesla T4", "A100", "H100", "A30", "L40S", "A10", "A10G"}
 
 
 def _gen_ros_gpu_metrics(gpu_model, gpu_memory_mib, mig_profile=None, overrides=None):
