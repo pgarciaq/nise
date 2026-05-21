@@ -313,6 +313,185 @@ generators:
                     labels: label_app:ml-inference|label_storageclass:gp3-csi
                     capacity_gig: 100
 
+        # --- GPU Node 3: MIG Partitioned A100 (edge cases) ---
+        - node:
+          node_name: gpu-mig-1
+          node_labels: "label_environment:production|label_role:gpu|label_accelerator:nvidia-a100-mig"
+          cpu_cores: 64
+          memory_gig: 512
+          resource_id: gpu-mig-node-id
+          namespaces:
+            ml-serving:
+              pods:
+                # MIG single strategy: one pod per MIG slice
+                - pod:
+                  pod_name: nlp-inference-small
+                  cpu_request: 2000
+                  mem_request_gig: 16
+                  cpu_limit: 4000
+                  mem_limit_gig: 32
+                  labels: label_app:nlp|label_component:inference|label_mig:1g5gb
+                  workload: deployment
+                  gpus:
+                    - gpu_model: A100
+                      gpu_memory_capacity_mib: 81920
+                      mig_instances:
+                        - mig_profile: 1g.5gb
+                          mig_strategy: single
+                          mig_instance_id: 1
+                # MIG single strategy: larger slice
+                - pod:
+                  pod_name: nlp-inference-medium
+                  cpu_request: 4000
+                  mem_request_gig: 32
+                  cpu_limit: 8000
+                  mem_limit_gig: 64
+                  labels: label_app:nlp|label_component:inference|label_mig:3g20gb
+                  workload: deployment
+                  gpus:
+                    - gpu_model: A100
+                      gpu_memory_capacity_mib: 81920
+                      mig_instances:
+                        - mig_profile: 3g.20gb
+                          mig_strategy: single
+                          mig_instance_id: 2
+                # MIG mixed strategy: pod shares GPU with different slice sizes
+                - pod:
+                  pod_name: batch-scoring
+                  cpu_request: 4000
+                  mem_request_gig: 32
+                  cpu_limit: 8000
+                  mem_limit_gig: 64
+                  labels: label_app:batch|label_component:scoring|label_mig:4g20gb
+                  workload: deployment
+                  gpus:
+                    - gpu_model: A100
+                      gpu_memory_capacity_mib: 81920
+                      mig_instances:
+                        - mig_profile: 4g.20gb
+                          mig_strategy: mixed
+                          mig_instance_id: 3
+
+            ml-research:
+              pods:
+                # Idle GPU: researcher allocated but not using it
+                - pod:
+                  pod_name: idle-notebook
+                  cpu_request: 1000
+                  mem_request_gig: 8
+                  cpu_limit: 2000
+                  mem_limit_gig: 16
+                  labels: label_app:jupyter|label_user:researcher2|label_status:idle
+                  workload: deployment
+                  gpus:
+                    - gpu_model: A100
+                      gpu_memory_capacity_mib: 40960
+                      sm_active_avg: 0.01
+                      tensor_pipe_active_avg: 0.005
+                      dram_active_avg: 0.02
+                      fb_usage_avg: 512
+                # Underutilized GPU: light batch job on expensive hardware
+                - pod:
+                  pod_name: light-etl
+                  cpu_request: 2000
+                  mem_request_gig: 16
+                  cpu_limit: 4000
+                  mem_limit_gig: 32
+                  labels: label_app:etl|label_environment:production|label_status:underutilized
+                  workload: deployment
+                  gpus:
+                    - gpu_model: H100
+                      gpu_memory_capacity_mib: 81920
+                      sm_active_avg: 0.12
+                      tensor_pipe_active_avg: 0.08
+                      dram_active_avg: 0.15
+                      fb_usage_avg: 4096
+                # Memory-bound GPU: large model inference (high DRAM, low compute)
+                - pod:
+                  pod_name: llm-serving-large
+                  cpu_request: 8000
+                  mem_request_gig: 64
+                  cpu_limit: 16000
+                  mem_limit_gig: 128
+                  labels: label_app:llm|label_component:serving|label_model:70b
+                  workload: deployment
+                  gpus:
+                    - gpu_model: H100
+                      gpu_memory_capacity_mib: 81920
+                      sm_active_avg: 0.25
+                      tensor_pipe_active_avg: 0.18
+                      dram_active_avg: 0.82
+                      fb_usage_avg: 72000
+                # Compute-bound GPU: training with high tensor core utilization
+                - pod:
+                  pod_name: diffusion-train
+                  cpu_request: 8000
+                  mem_request_gig: 64
+                  cpu_limit: 16000
+                  mem_limit_gig: 128
+                  labels: label_app:diffusion|label_component:train|label_environment:production
+                  workload: deployment
+                  gpus:
+                    - gpu_model: H100
+                      gpu_memory_capacity_mib: 81920
+                      sm_active_avg: 0.78
+                      tensor_pipe_active_avg: 0.72
+                      dram_active_avg: 0.45
+                      fb_usage_avg: 65000
+                # Multi-GPU pod: distributed training across 4 GPUs
+                - pod:
+                  pod_name: distributed-train
+                  cpu_request: 16000
+                  mem_request_gig: 128
+                  cpu_limit: 32000
+                  mem_limit_gig: 256
+                  labels: label_app:distributed|label_component:train|label_environment:production
+                  workload: deployment
+                  gpus:
+                    - gpu_model: A100
+                      gpu_memory_capacity_mib: 81920
+                    - gpu_model: A100
+                      gpu_memory_capacity_mib: 81920
+                    - gpu_model: A100
+                      gpu_memory_capacity_mib: 81920
+                    - gpu_model: A100
+                      gpu_memory_capacity_mib: 81920
+
+        # --- GPU Node 4: Single T4 (cost-sensitive inference) ---
+        - node:
+          node_name: gpu-t4-1
+          node_labels: "label_environment:production|label_role:gpu|label_accelerator:nvidia-t4"
+          cpu_cores: 16
+          memory_gig: 64
+          resource_id: gpu-t4-node-id
+          namespaces:
+            ml-inference:
+              pods:
+                # Single T4: budget inference (no MIG support on T4)
+                - pod:
+                  pod_name: text-classifier
+                  cpu_request: 2000
+                  mem_request_gig: 8
+                  cpu_limit: 4000
+                  mem_limit_gig: 16
+                  labels: label_app:classifier|label_model:bert|label_environment:production
+                  workload: deployment
+                  gpus:
+                    - gpu_model: Tesla T4
+                      gpu_memory_capacity_mib: 15360
+                # T4 with Tier 2 profiling (no tensor/SM metrics from DCGM)
+                - pod:
+                  pod_name: image-resize
+                  cpu_request: 1000
+                  mem_request_gig: 4
+                  cpu_limit: 2000
+                  mem_limit_gig: 8
+                  labels: label_app:image-processing|label_environment:production
+                  workload: deployment
+                  gpus:
+                    - gpu_model: Tesla T4
+                      gpu_memory_capacity_mib: 15360
+
         # --- Worker Node 3: Platform services ---
         - node:
           node_name: worker-platform-1
