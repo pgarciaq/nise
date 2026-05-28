@@ -36,6 +36,7 @@ from nise.__main__ import fix_dates
 from nise.generators.ocp import (
     OCP_ROS_USAGE,
     OCP_ROS_NAMESPACE_USAGE,
+    OCP_ROS_CLUSTER_QUOTA,
     OCP_POD_USAGE,
     OCP_STORAGE_USAGE,
     OCP_NODE_LABEL,
@@ -1087,7 +1088,7 @@ class OCPReportTestCase(TestCase):
         ocp_create_report(options)
 
         # Verify ONLY ROS reports were created
-        ros_report_types = [OCP_ROS_USAGE, OCP_ROS_NAMESPACE_USAGE]
+        ros_report_types = [OCP_ROS_USAGE, OCP_ROS_NAMESPACE_USAGE, OCP_ROS_CLUSTER_QUOTA]
 
         for report_type in ros_report_types:
             month_output_file_name = f"{calendar.month_name[now.month]}-{now.year}-{cluster_id}-{report_type}"

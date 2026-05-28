@@ -84,6 +84,7 @@ from nise.generators.ocp import COST_OCP_REPORT_TYPE_TO_COLS
 from nise.generators.ocp import ROS_OCP_REPORT_TYPE_TO_COLS
 from nise.generators.ocp import OCP_ROS_USAGE
 from nise.generators.ocp import OCP_ROS_NAMESPACE_USAGE
+from nise.generators.ocp import OCP_ROS_CLUSTER_QUOTA
 from nise.generators.ocp import OCP_SNAPSHOT_INVENTORY
 from nise.generators.ocp import OCPGenerator
 from nise.manifest import aws_generate_manifest
@@ -973,7 +974,12 @@ def ocp_create_report(options):  # noqa: C901
                 report_type,
                 data[report_type],
             )
-            if report_type in (OCP_ROS_USAGE, OCP_ROS_NAMESPACE_USAGE, OCP_SNAPSHOT_INVENTORY):
+            if report_type in (
+                OCP_ROS_USAGE,
+                OCP_ROS_NAMESPACE_USAGE,
+                OCP_ROS_CLUSTER_QUOTA,
+                OCP_SNAPSHOT_INVENTORY,
+            ):
                 monthly_ros_files.append(month_output_file)
             else:
                 monthly_files.append(month_output_file)
@@ -1015,6 +1021,10 @@ def ocp_create_report(options):  # noqa: C901
                     temp_filename = (
                         f"{ocp_assembly_id}-ros-openshift-namespace-{yearmonth_part}.{current_file_number}.csv"
                     )
+                elif "ocp_ros_cluster_quota" in original_file:
+                    period_start = gen_start_date.strftime("%Y%m%d")
+                    period_end = gen_end_date.strftime("%Y%m%d")
+                    temp_filename = f"ros-openshift-cluster-quota-{period_start}-{period_end}.{current_file_number}.csv"
                 elif "ocp_snapshot_inventory" in original_file:
                     basename = os.path.basename(original_file)
                     parts = basename.split("-")
