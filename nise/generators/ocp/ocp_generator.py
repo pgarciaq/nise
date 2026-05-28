@@ -208,7 +208,9 @@ OCP_ROS_NAMESPACE_USAGE_COLUMN = (
     "interval_end",
     "namespace",
     "cpu_request_namespace_sum",
+    "cpu_request_namespace_used",
     "cpu_limit_namespace_sum",
+    "cpu_limit_namespace_used",
     "cpu_usage_namespace_avg",
     "cpu_usage_namespace_max",
     "cpu_usage_namespace_min",
@@ -216,7 +218,9 @@ OCP_ROS_NAMESPACE_USAGE_COLUMN = (
     "cpu_throttle_namespace_max",
     "cpu_throttle_namespace_min",
     "memory_request_namespace_sum",
+    "memory_request_namespace_used",
     "memory_limit_namespace_sum",
+    "memory_limit_namespace_used",
     "memory_usage_namespace_avg",
     "memory_usage_namespace_max",
     "memory_usage_namespace_min",
@@ -541,6 +545,77 @@ def get_owner_workload(pod, workload=None):
     return pod, ok, pod, wt
 
 
+def _quota_cpu_used_value(quota_config, config_key, pod_sum, standalone_range, constant_values):
+    if config_key in quota_config:
+        return round(float(quota_config[config_key]), 5)
+    if pod_sum > 0:
+        ratio = 0.5 if constant_values else uniform(0.4, 0.95)
+        return round(ratio * pod_sum, 5)
+    low, high = standalone_range
+    return round(uniform(low, high), 5)
+
+
+def _quota_memory_used_value(quota_config, config_key, pod_sum, standalone_gig_range, constant_values):
+    if config_key in quota_config:
+        value = quota_config[config_key]
+        if config_key.endswith("_gig"):
+            return round(float(value) * GIGABYTE, 5)
+        return round(float(value), 5)
+    if pod_sum > 0:
+        ratio = 0.5 if constant_values else uniform(0.4, 0.95)
+        return round(ratio * pod_sum, 5)
+    low_gig, high_gig = standalone_gig_range
+    return round(uniform(low_gig, high_gig) * GIGABYTE, 5)
+
+
+def namespace_quota_used_values(
+    quota_config,
+    cpu_request_sum,
+    cpu_limit_sum,
+    memory_request_sum,
+    memory_limit_sum,
+    constant_values_ros_ocp=False,
+):
+    """Return kube_resourcequota type=used values for a namespace (cores and bytes)."""
+    cpu_request_used = _quota_cpu_used_value(
+        quota_config, "cpu_request_used", cpu_request_sum, (0.5, 8.0), constant_values_ros_ocp
+    )
+    cpu_limit_used = _quota_cpu_used_value(
+        quota_config, "cpu_limit_used", cpu_limit_sum, (0.5, 8.0), constant_values_ros_ocp
+    )
+    memory_request_used = _quota_memory_used_value(
+        quota_config, "memory_request_used_gig", memory_request_sum, (0.5, 16.0), constant_values_ros_ocp
+    )
+    memory_limit_used = _quota_memory_used_value(
+        quota_config, "memory_limit_used_gig", memory_limit_sum, (0.5, 16.0), constant_values_ros_ocp
+    )
+
+    if "memory_request_used" in quota_config:
+        memory_request_used = round(float(quota_config["memory_request_used"]), 5)
+    if "memory_limit_used" in quota_config:
+        memory_limit_used = round(float(quota_config["memory_limit_used"]), 5)
+
+    if "cpu_request_used" not in quota_config and cpu_request_sum > 0:
+        cpu_request_used = min(cpu_request_used, cpu_request_sum)
+    if "cpu_limit_used" not in quota_config and cpu_limit_sum > 0:
+        cpu_limit_used = min(cpu_limit_used, cpu_limit_sum)
+    if (
+        "memory_request_used" not in quota_config
+        and "memory_request_used_gig" not in quota_config
+        and memory_request_sum > 0
+    ):
+        memory_request_used = min(memory_request_used, memory_request_sum)
+    if "memory_limit_used" not in quota_config and "memory_limit_used_gig" not in quota_config and memory_limit_sum > 0:
+        memory_limit_used = min(memory_limit_used, memory_limit_sum)
+
+    return {
+        "cpu_request_namespace_used": cpu_request_used,
+        "cpu_limit_namespace_used": cpu_limit_used,
+        "memory_request_namespace_used": memory_request_used,
+        "memory_limit_namespace_used": memory_limit_used,
+    }
+
+
 def generate_randomized_ros_usage(usage_dict, limit_value, generate_constant_value=False):
     if generate_constant_value:
         # will generate constant values
@@ -630,7 +705,9 @@ class OCPGenerator(AbstractGenerator):
         ]
         self.pod_pvc_map = {}
         self.vm_pod_map = {}
+        self.namespace_resource_quota = {}
         self.nodes = self._gen_nodes()
+        self._load_namespace_resource_quota_configs(self.nodes)
         self.namespaces = self._gen_namespaces(self.nodes)
         self.pods, self.namespace2pods, self.ros_data = self._gen_pods(self.namespaces)
 
@@ -748,6 +825,16 @@ class OCPGenerator(AbstractGenerator):
                 }
                 nodes.append(node)
         return nodes
+
+    def _load_namespace_resource_quota_configs(self, nodes):
+        """Load optional per-namespace ResourceQuota used values from static report YAML."""
+        for node in nodes:
+            for ns_name, ns_data in (node.get("namespaces") or {}).items():
+                if not ns_data:
+                    continue
+                quota = ns_data.get("resource_quota")
+                if quota:
+                    self.namespace_resource_quota[ns_name] = quota
 
     def _gen_namespaces(self, nodes):
         """Create namespaces on specific nodes and keep relationship."""
@@ -1649,11 +1736,21 @@ class OCPGenerator(AbstractGenerator):
             memory_rss_usage_mins.append(pod_data.get("memory_rss_usage_container_min", 0))
             memory_rss_usage_maxs.append(pod_data.get("memory_rss_usage_container_max", 0))
 
+        quota_used = namespace_quota_used_values(
+            self.namespace_resource_quota.get(namespace, {}),
+            cpu_request_sum,
+            cpu_limit_sum,
+            memory_request_sum,
+            memory_limit_sum,
+            constant_values_ros_ocp=self.constant_values_ros_ocp,
+        )
+
         # Calculate aggregated metrics
         namespace_data = {
             "namespace": namespace,
             "cpu_request_namespace_sum": cpu_request_sum,
             "cpu_limit_namespace_sum": cpu_limit_sum,
+            **quota_used,
             "cpu_usage_namespace_avg": round(sum(cpu_usage_avgs) / len(cpu_usage_avgs), 5) if cpu_usage_avgs else 0,
             "cpu_usage_namespace_max": max(cpu_usage_maxs, default=0),
             # TODO: Consider using cpu_throttle_container_min (project-koku/koku-metrics-operator#705)
