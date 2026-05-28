@@ -1000,7 +1000,7 @@ class OCPGeneratorTestCase(TestCase):
 
     def test_ros_namespace_usage_columns_defined(self):
         """Test that ROS namespace usage columns are properly defined in the correct order."""
-        self.assertEqual(len(OCP_ROS_NAMESPACE_USAGE_COLUMN), 25)
+        self.assertEqual(len(OCP_ROS_NAMESPACE_USAGE_COLUMN), 29)
 
         # Expected columns in the exact order specified in the original requirements
         expected_columns_in_order = (
@@ -1010,7 +1010,9 @@ class OCPGeneratorTestCase(TestCase):
             "interval_end",
             "namespace",
             "cpu_request_namespace_sum",
+            "cpu_request_namespace_used",
             "cpu_limit_namespace_sum",
+            "cpu_limit_namespace_used",
             "cpu_usage_namespace_avg",
             "cpu_usage_namespace_max",
             "cpu_usage_namespace_min",
@@ -1018,7 +1020,9 @@ class OCPGeneratorTestCase(TestCase):
             "cpu_throttle_namespace_max",
             "cpu_throttle_namespace_min",
             "memory_request_namespace_sum",
+            "memory_request_namespace_used",
             "memory_limit_namespace_sum",
+            "memory_limit_namespace_used",
             "memory_usage_namespace_avg",
             "memory_usage_namespace_max",
             "memory_usage_namespace_min",
@@ -1043,9 +1047,11 @@ class OCPGeneratorTestCase(TestCase):
         key_positions = {
             "namespace": 4,
             "cpu_request_namespace_sum": 5,
-            "memory_request_namespace_sum": 13,
-            "namespace_running_pods_max": 21,
-            "namespace_total_pods_avg": 24,
+            "cpu_request_namespace_used": 6,
+            "memory_request_namespace_sum": 15,
+            "memory_request_namespace_used": 16,
+            "namespace_running_pods_max": 25,
+            "namespace_total_pods_avg": 28,
         }
 
         for column_name, expected_position in key_positions.items():
@@ -1216,6 +1222,85 @@ class OCPGeneratorTestCase(TestCase):
         self.assertIsInstance(result, dict)
         self.assertEqual(result, {})
         self.assertEqual(len(result), 0)
+
+    def test_aggregate_namespace_data_includes_quota_used_columns(self):
+        """Test that aggregated namespace data includes ResourceQuota used columns."""
+        generator = OCPGenerator(self.two_hours_ago, self.now, {}, ros_ocp_info=True)
+        generator.ros_data = {
+            "pod1": {
+                "namespace": "quota-ns",
+                "cpu_request_container_sum": 4.0,
+                "cpu_limit_container_sum": 8.0,
+                "cpu_usage_container_avg": 1.0,
+                "cpu_usage_container_min": 0.5,
+                "cpu_usage_container_max": 1.5,
+                "cpu_throttle_container_avg": 0.0,
+                "cpu_throttle_container_max": 0.0,
+                "memory_request_container_sum": 2 * 1024 * 1024 * 1024,
+                "memory_limit_container_sum": 4 * 1024 * 1024 * 1024,
+                "memory_usage_container_avg": 1024 * 1024 * 1024,
+                "memory_usage_container_min": 512 * 1024 * 1024,
+                "memory_usage_container_max": 1536 * 1024 * 1024,
+                "memory_rss_usage_container_avg": 900 * 1024 * 1024,
+                "memory_rss_usage_container_min": 400 * 1024 * 1024,
+                "memory_rss_usage_container_max": 1000 * 1024 * 1024,
+            },
+        }
+
+        result = generator._aggregate_namespace_data("quota-ns", self.two_hours_ago, self.now)
+
+        for column in (
+            "cpu_request_namespace_used",
+            "cpu_limit_namespace_used",
+            "memory_request_namespace_used",
+            "memory_limit_namespace_used",
+        ):
+            with self.subTest(column=column):
+                self.assertIn(column, result)
+                self.assertGreater(result[column], 0)
+
+        self.assertLessEqual(result["cpu_request_namespace_used"], result["cpu_request_namespace_sum"])
+        self.assertLessEqual(result["cpu_limit_namespace_used"], result["cpu_limit_namespace_sum"])
+        self.assertLessEqual(result["memory_request_namespace_used"], result["memory_request_namespace_sum"])
+        self.assertLessEqual(result["memory_limit_namespace_used"], result["memory_limit_namespace_sum"])
+
+    def test_aggregate_namespace_data_yaml_resource_quota(self):
+        """Test namespace quota used values from static report YAML resource_quota."""
+        attributes = {
+            "nodes": [
+                {
+                    "node_name": "worker-1",
+                    "cpu_cores": 16,
+                    "memory_gig": 64,
+                    "namespaces": {
+                        "yaml-quota-ns": {
+                            "resource_quota": {
+                                "cpu_request_used": 2.5,
+                                "cpu_limit_used": 5.0,
+                                "memory_request_used_gig": 6,
+                                "memory_limit_used_gig": 12,
+                            },
+                            "pods": [
+                                {
+                                    "pod_name": "app",
+                                    "cpu_request": 1,
+                                    "cpu_limit": 2,
+                                    "mem_request_gig": 1,
+                                    "mem_limit_gig": 2,
+                                }
+                            ],
+                        }
+                    },
+                }
+            ]
+        }
+        generator = OCPGenerator(self.two_hours_ago, self.now, attributes, ros_ocp_info=True)
+        result = generator._aggregate_namespace_data("yaml-quota-ns", self.two_hours_ago, self.now)
+
+        self.assertEqual(result["cpu_request_namespace_used"], 2.5)
+        self.assertEqual(result["cpu_limit_namespace_used"], 5.0)
+        self.assertEqual(result["memory_request_namespace_used"], 6 * 1024 * 1024 * 1024)
+        self.assertEqual(result["memory_limit_namespace_used"], 12 * 1024 * 1024 * 1024)
 
     def test_gpu_usage_in_report_type_to_cols(self):
         """Test that GPU usage is in the report type mapping."""

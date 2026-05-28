@@ -31,6 +31,12 @@ generators:
           resource_id: node-prod-1-id
           namespaces:
             cost-management:
+              # Optional ResourceQuota type=used values (cores and GiB) for ROS namespace CSV.
+              resource_quota:
+                cpu_request_used: 2.5
+                cpu_limit_used: 6.0
+                memory_request_used_gig: 8
+                memory_limit_used_gig: 16
               pods:
                 - pod:
                   pod_name: koku-api
