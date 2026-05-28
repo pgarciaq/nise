@@ -21,6 +21,24 @@ generators:
   - OCPGenerator:
       start_date: 2026-04-01
       end_date: 2026-05-11
+      cluster_resource_quotas:
+        - name: team-frontend
+          cpu_request_hard: 20
+          cpu_limit_hard: 40
+          memory_request_hard_gig: 50
+          memory_limit_hard_gig: 100
+        - name: team-backend
+          cpu_request_hard: 30
+          cpu_limit_hard: 60
+          memory_request_hard_gig: 64
+          memory_limit_hard_gig: 128
+          cpu_request_used: 18
+          memory_request_used_gig: 40
+        - name: team-platform
+          cpu_request_hard: 15
+          cpu_limit_hard: 30
+          memory_request_hard_gig: 32
+          memory_limit_hard_gig: 64
       nodes:
         # --- Worker Node 1: Production workloads with PVCs ---
         - node:

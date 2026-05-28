@@ -38,8 +38,11 @@ from nise.generators.ocp.ocp_generator import OCP_NODE_LABEL
 from nise.generators.ocp.ocp_generator import OCP_NODE_LABEL_COLUMNS
 from nise.generators.ocp.ocp_generator import OCP_POD_USAGE
 from nise.generators.ocp.ocp_generator import OCP_POD_USAGE_COLUMNS
+from nise.generators.ocp.ocp_generator import OCP_ROS_CLUSTER_QUOTA
+from nise.generators.ocp.ocp_generator import OCP_ROS_CLUSTER_QUOTA_COLUMN
 from nise.generators.ocp.ocp_generator import OCP_ROS_NAMESPACE_USAGE
 from nise.generators.ocp.ocp_generator import OCP_ROS_NAMESPACE_USAGE_COLUMN
+from nise.generators.ocp.ocp_generator import cluster_quota_hard_and_used_values
 from nise.generators.ocp.ocp_generator import OCP_ROS_USAGE
 from nise.generators.ocp.ocp_generator import OCP_ROS_USAGE_COLUMN
 from nise.generators.ocp.ocp_generator import OCP_STORAGE_COLUMNS
@@ -1064,11 +1067,85 @@ class OCPGeneratorTestCase(TestCase):
                     f"but found at position {actual_position}",
                 )
 
+    def test_ros_cluster_quota_columns_defined(self):
+        """Test that ClusterResourceQuota columns are defined in the expected order."""
+        expected_columns = (
+            "report_period_start",
+            "report_period_end",
+            "cluster_quota_name",
+            "cpu_request_hard",
+            "cpu_request_used",
+            "cpu_limit_hard",
+            "cpu_limit_used",
+            "memory_request_hard",
+            "memory_request_used",
+            "memory_limit_hard",
+            "memory_limit_used",
+        )
+        self.assertEqual(len(OCP_ROS_CLUSTER_QUOTA_COLUMN), 11)
+        self.assertEqual(OCP_ROS_CLUSTER_QUOTA_COLUMN, expected_columns)
+
+    def test_cluster_quota_hard_and_used_values(self):
+        """Test CRQ hard/used generation from static YAML-style config."""
+        quota_config = {
+            "name": "team-frontend",
+            "cpu_request_hard": 20,
+            "cpu_limit_hard": 40,
+            "memory_request_hard_gig": 50,
+            "memory_limit_hard_gig": 100,
+            "cpu_request_used": 12,
+            "memory_request_used_gig": 30,
+        }
+        values = cluster_quota_hard_and_used_values(quota_config, constant_values_ros_ocp=True)
+        self.assertEqual(values["cluster_quota_name"], "team-frontend")
+        self.assertEqual(values["cpu_request_hard"], 20)
+        self.assertEqual(values["cpu_request_used"], 12)
+        self.assertEqual(values["cpu_limit_hard"], 40)
+        self.assertEqual(values["memory_request_hard"], 50 * 1024 * 1024 * 1024)
+        self.assertEqual(values["memory_request_used"], 30 * 1024 * 1024 * 1024)
+        self.assertLessEqual(values["cpu_limit_used"], values["cpu_limit_hard"])
+        self.assertLessEqual(values["memory_limit_used"], values["memory_limit_hard"])
+
+    def test_gen_ros_cluster_quota_rows_default_quotas(self):
+        """Test default ClusterResourceQuota row generation."""
+        generator = OCPGenerator(self.two_hours_ago, self.now, {}, ros_ocp_info=True)
+        results = list(generator._gen_ros_cluster_quota_rows())
+        self.assertEqual(len(results), 3)
+        names = {row["cluster_quota_name"] for row in results}
+        self.assertEqual(names, {"team-frontend", "team-backend", "team-platform"})
+        for row in results:
+            self.assertGreater(row["cpu_request_hard"], 0)
+            self.assertGreater(row["memory_request_hard"], 0)
+            self.assertGreaterEqual(row["cpu_request_used"], row["cpu_request_hard"] * 0.3)
+            self.assertLessEqual(row["cpu_request_used"], row["cpu_request_hard"])
+            self.assertGreaterEqual(row["memory_request_used"], row["memory_request_hard"] * 0.3)
+            self.assertLessEqual(row["memory_request_used"], row["memory_request_hard"])
+
+    def test_gen_ros_cluster_quota_rows_from_static_yaml(self):
+        """Test ClusterResourceQuota rows from static YAML attributes."""
+        attributes = {
+            "cluster_resource_quotas": [
+                {
+                    "name": "team-custom",
+                    "cpu_request_hard": 25,
+                    "cpu_limit_hard": 50,
+                    "memory_request_hard_gig": 80,
+                    "memory_limit_hard_gig": 160,
+                }
+            ]
+        }
+        generator = OCPGenerator(self.two_hours_ago, self.now, attributes, ros_ocp_info=True)
+        results = list(generator._gen_ros_cluster_quota_rows())
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["cluster_quota_name"], "team-custom")
+        self.assertEqual(results[0]["cpu_request_hard"], 25)
+
     def test_init_with_ros_ocp_info(self):
         """Test that generator initializes correctly with ros_ocp_info enabled."""
         generator = OCPGenerator(self.two_hours_ago, self.now, {}, ros_ocp_info=True)
 
         self.assertIn(OCP_ROS_NAMESPACE_USAGE, generator.ocp_report_generation)
+        self.assertIn(OCP_ROS_CLUSTER_QUOTA, generator.ocp_report_generation)
 
         ros_namespace_config = generator.ocp_report_generation[OCP_ROS_NAMESPACE_USAGE]
         self.assertIn("_generate_hourly_data", ros_namespace_config)
@@ -1130,9 +1207,10 @@ class OCPGeneratorTestCase(TestCase):
         generator = OCPGenerator(self.two_hours_ago, self.now, {}, ros_only=True)
 
         # Should have ONLY ROS reports in ocp_report_generation
-        self.assertEqual(len(generator.ocp_report_generation), 2)
+        self.assertEqual(len(generator.ocp_report_generation), 3)
         self.assertIn(OCP_ROS_USAGE, generator.ocp_report_generation)
         self.assertIn(OCP_ROS_NAMESPACE_USAGE, generator.ocp_report_generation)
+        self.assertIn(OCP_ROS_CLUSTER_QUOTA, generator.ocp_report_generation)
 
         # Should NOT have standard reports
         self.assertNotIn(OCP_POD_USAGE, generator.ocp_report_generation)
@@ -1158,7 +1236,10 @@ class OCPGeneratorTestCase(TestCase):
 
         # Test separation: namespace usage should be in ROS dict, not in COST dict
         self.assertIn(OCP_ROS_NAMESPACE_USAGE, ROS_OCP_REPORT_TYPE_TO_COLS)
+        self.assertIn(OCP_ROS_CLUSTER_QUOTA, ROS_OCP_REPORT_TYPE_TO_COLS)
+        self.assertEqual(ROS_OCP_REPORT_TYPE_TO_COLS[OCP_ROS_CLUSTER_QUOTA], OCP_ROS_CLUSTER_QUOTA_COLUMN)
         self.assertNotIn(OCP_ROS_NAMESPACE_USAGE, COST_OCP_REPORT_TYPE_TO_COLS)
+        self.assertNotIn(OCP_ROS_CLUSTER_QUOTA, COST_OCP_REPORT_TYPE_TO_COLS)
 
         # Test that cost-related reports are in COST dict
         self.assertIn(OCP_POD_USAGE, COST_OCP_REPORT_TYPE_TO_COLS)

@@ -48,6 +48,7 @@ OCP_NAMESPACE_LABEL = "ocp_namespace_label"
 OCP_VM_USAGE = "ocp_vm_usage"
 OCP_ROS_USAGE = "ocp_ros_usage"
 OCP_ROS_NAMESPACE_USAGE = "ocp_ros_namespace_usage"
+OCP_ROS_CLUSTER_QUOTA = "ocp_ros_cluster_quota"
 OCP_GPU_USAGE = "ocp_gpu_usage"
 OCP_SNAPSHOT_INVENTORY = "ocp_snapshot_inventory"
 OCP_POD_USAGE_COLUMNS = (
@@ -232,6 +233,19 @@ OCP_ROS_NAMESPACE_USAGE_COLUMN = (
     "namespace_total_pods_max",
     "namespace_total_pods_avg",
 )
+OCP_ROS_CLUSTER_QUOTA_COLUMN = (
+    "report_period_start",
+    "report_period_end",
+    "cluster_quota_name",
+    "cpu_request_hard",
+    "cpu_request_used",
+    "cpu_limit_hard",
+    "cpu_limit_used",
+    "memory_request_hard",
+    "memory_request_used",
+    "memory_limit_hard",
+    "memory_limit_used",
+)
 OCP_GPU_USAGE_COLUMNS = (
     "report_period_start",
     "report_period_end",
@@ -277,9 +291,12 @@ COST_OCP_REPORT_TYPE_TO_COLS = {
 ROS_OCP_REPORT_TYPE_TO_COLS = {
     OCP_ROS_USAGE: OCP_ROS_USAGE_COLUMN,
     OCP_ROS_NAMESPACE_USAGE: OCP_ROS_NAMESPACE_USAGE_COLUMN,
+    OCP_ROS_CLUSTER_QUOTA: OCP_ROS_CLUSTER_QUOTA_COLUMN,
     OCP_SNAPSHOT_INVENTORY: OCP_SNAPSHOT_INVENTORY_COLUMNS,
     OCP_STORAGE_USAGE: OCP_STORAGE_COLUMNS,
 }
+
+DEFAULT_CLUSTER_RESOURCE_QUOTA_NAMES = ("team-frontend", "team-backend", "team-platform")
 
 OCP_REPORT_TYPE_TO_COLS = COST_OCP_REPORT_TYPE_TO_COLS | ROS_OCP_REPORT_TYPE_TO_COLS
 
@@ -616,6 +633,91 @@ def namespace_quota_used_values(
     }
 
 
+def cluster_quota_used_ratio(quota_config, hard_key, used_key, constant_values_ros_ocp=False):
+    """Return a used/hard ratio for cluster quota (default 30–85% of hard)."""
+    if used_key in quota_config:
+        hard = float(quota_config.get(hard_key, 0) or 0)
+        used = float(quota_config[used_key])
+        if hard > 0:
+            return min(used / hard, 1.0)
+        return 0.65
+    if constant_values_ros_ocp:
+        return 0.65
+    return uniform(0.3, 0.85)
+
+
+def cluster_quota_hard_and_used_values(quota_config, constant_values_ros_ocp=False):
+    """Return ClusterResourceQuota hard and used values (CPU cores, memory bytes)."""
+    cpu_request_hard = float(quota_config.get("cpu_request_hard", randint(10, 50)))
+    cpu_limit_hard = float(quota_config.get("cpu_limit_hard", cpu_request_hard * 2))
+
+    memory_request_hard_gig = quota_config.get("memory_request_hard_gig")
+    if memory_request_hard_gig is not None:
+        memory_request_hard = float(memory_request_hard_gig) * GIGABYTE
+    else:
+        memory_request_hard = float(quota_config.get("memory_request_hard", randint(20, 100) * GIGABYTE))
+
+    memory_limit_hard_gig = quota_config.get("memory_limit_hard_gig")
+    if memory_limit_hard_gig is not None:
+        memory_limit_hard = float(memory_limit_hard_gig) * GIGABYTE
+    else:
+        memory_limit_hard = float(quota_config.get("memory_limit_hard", memory_request_hard * 2))
+
+    cpu_request_ratio = cluster_quota_used_ratio(
+        quota_config, "cpu_request_hard", "cpu_request_used", constant_values_ros_ocp
+    )
+    cpu_limit_ratio = cluster_quota_used_ratio(
+        quota_config, "cpu_limit_hard", "cpu_limit_used", constant_values_ros_ocp
+    )
+    memory_request_ratio = cluster_quota_used_ratio(
+        quota_config, "memory_request_hard", "memory_request_used", constant_values_ros_ocp
+    )
+    memory_limit_ratio = cluster_quota_used_ratio(
+        quota_config, "memory_limit_hard", "memory_limit_used", constant_values_ros_ocp
+    )
+
+    if "cpu_request_used" in quota_config:
+        cpu_request_used = float(quota_config["cpu_request_used"])
+    else:
+        cpu_request_used = round(cpu_request_hard * cpu_request_ratio, 5)
+
+    if "cpu_limit_used" in quota_config:
+        cpu_limit_used = float(quota_config["cpu_limit_used"])
+    else:
+        cpu_limit_used = round(cpu_limit_hard * cpu_limit_ratio, 5)
+
+    if "memory_request_used" in quota_config:
+        memory_request_used = float(quota_config["memory_request_used"])
+    elif "memory_request_used_gig" in quota_config:
+        memory_request_used = round(float(quota_config["memory_request_used_gig"]) * GIGABYTE, 5)
+    else:
+        memory_request_used = round(memory_request_hard * memory_request_ratio, 5)
+
+    if "memory_limit_used" in quota_config:
+        memory_limit_used = float(quota_config["memory_limit_used"])
+    elif "memory_limit_used_gig" in quota_config:
+        memory_limit_used = round(float(quota_config["memory_limit_used_gig"]) * GIGABYTE, 5)
+    else:
+        memory_limit_used = round(memory_limit_hard * memory_limit_ratio, 5)
+
+    cpu_request_used = min(cpu_request_used, cpu_request_hard)
+    cpu_limit_used = min(cpu_limit_used, cpu_limit_hard)
+    memory_request_used = min(memory_request_used, memory_request_hard)
+    memory_limit_used = min(memory_limit_used, memory_limit_hard)
+
+    return {
+        "cluster_quota_name": quota_config["name"],
+        "cpu_request_hard": round(cpu_request_hard, 5),
+        "cpu_request_used": cpu_request_used,
+        "cpu_limit_hard": round(cpu_limit_hard, 5),
+        "cpu_limit_used": cpu_limit_used,
+        "memory_request_hard": round(memory_request_hard, 5),
+        "memory_request_used": memory_request_used,
+        "memory_limit_hard": round(memory_limit_hard, 5),
+        "memory_limit_used": memory_limit_used,
+    }
+
+
 def generate_randomized_ros_usage(usage_dict, limit_value, generate_constant_value=False):
     if generate_constant_value:
         # will generate constant values
@@ -706,6 +808,7 @@ class OCPGenerator(AbstractGenerator):
         self.pod_pvc_map = {}
         self.vm_pod_map = {}
         self.namespace_resource_quota = {}
+        self.cluster_resource_quotas = self._gen_cluster_resource_quotas()
         self.nodes = self._gen_nodes()
         self._load_namespace_resource_quota_configs(self.nodes)
         self.namespaces = self._gen_namespaces(self.nodes)
@@ -724,6 +827,10 @@ class OCPGenerator(AbstractGenerator):
             OCP_ROS_NAMESPACE_USAGE: {
                 "_generate_hourly_data": self._gen_quarter_hourly_ros_ocp_namespace_usage,
                 "_update_data": self._update_ros_ocp_namespace_data,
+            },
+            OCP_ROS_CLUSTER_QUOTA: {
+                "_generate_hourly_data": self._gen_ros_cluster_quota_rows,
+                "_update_data": self._update_ros_cluster_quota_data,
             },
         }
 
@@ -835,6 +942,52 @@ class OCPGenerator(AbstractGenerator):
                 quota = ns_data.get("resource_quota")
                 if quota:
                     self.namespace_resource_quota[ns_name] = quota
+
+    def _gen_cluster_resource_quotas(self):
+        """Build ClusterResourceQuota definitions from static YAML or defaults."""
+        if self._attributes and "cluster_resource_quotas" in self._attributes:
+            return self._cluster_resource_quotas_from_static(self._attributes["cluster_resource_quotas"])
+        return [self._default_cluster_resource_quota(name) for name in DEFAULT_CLUSTER_RESOURCE_QUOTA_NAMES]
+
+    @staticmethod
+    def _default_cluster_resource_quota(name):
+        """Randomized hard limits for a default team CRQ."""
+        cpu_request_hard = randint(10, 50)
+        memory_request_hard_gig = randint(20, 100)
+        return {
+            "name": name,
+            "cpu_request_hard": cpu_request_hard,
+            "cpu_limit_hard": cpu_request_hard * 2,
+            "memory_request_hard_gig": memory_request_hard_gig,
+            "memory_limit_hard_gig": memory_request_hard_gig * 2,
+        }
+
+    def _cluster_resource_quotas_from_static(self, static_quotas):
+        """Normalize cluster_resource_quotas entries from static report YAML."""
+        quotas = []
+        for entry in static_quotas:
+            name = entry.get("name") or entry.get("cluster_quota_name")
+            if not name:
+                continue
+            quota = {"name": name}
+            for key in (
+                "cpu_request_hard",
+                "cpu_limit_hard",
+                "cpu_request_used",
+                "cpu_limit_used",
+                "memory_request_hard",
+                "memory_limit_hard",
+                "memory_request_used",
+                "memory_limit_used",
+                "memory_request_hard_gig",
+                "memory_limit_hard_gig",
+                "memory_request_used_gig",
+                "memory_limit_used_gig",
+            ):
+                if key in entry:
+                    quota[key] = entry[key]
+            quotas.append(quota)
+        return quotas
 
     def _gen_namespaces(self, nodes):
         """Create namespaces on specific nodes and keep relationship."""
@@ -1807,6 +1960,29 @@ class OCPGenerator(AbstractGenerator):
         namespace = kwargs.get("namespace", "")
         aggregated_data = self._aggregate_namespace_data(namespace, start, end)
         row.update(aggregated_data)
+        return row
+
+    def _gen_ros_cluster_quota_rows(self, **kwargs):
+        """Create ClusterResourceQuota rows (one per CRQ per report period)."""
+        if not self.cluster_resource_quotas:
+            return
+        start = self.start_date
+        end = self.end_date
+        for quota_config in self.cluster_resource_quotas:
+            crq_kwargs = kwargs.copy()
+            crq_kwargs[REPORT_TYPE] = OCP_ROS_CLUSTER_QUOTA
+            row = self._init_data_row(start, end, **crq_kwargs)
+            yield self._update_data(row, start, end, cluster_quota_config=quota_config, **crq_kwargs)
+
+    def _update_ros_cluster_quota_data(self, row, start, end, **kwargs):
+        """Update the data row with ClusterResourceQuota hard/used values."""
+        quota_config = kwargs.get("cluster_quota_config", {})
+        row.update(
+            cluster_quota_hard_and_used_values(
+                quota_config,
+                constant_values_ros_ocp=self.constant_values_ros_ocp,
+            )
+        )
         return row
 
     def _gen_hourly_storage_usage(self, **kwargs):
