@@ -236,6 +236,8 @@ OCP_ROS_NAMESPACE_USAGE_COLUMN = (
 OCP_ROS_CLUSTER_QUOTA_COLUMN = (
     "report_period_start",
     "report_period_end",
+    "interval_start",
+    "interval_end",
     "cluster_quota_name",
     "cpu_request_hard",
     "cpu_request_used",
@@ -1972,7 +1974,9 @@ class OCPGenerator(AbstractGenerator):
             crq_kwargs = kwargs.copy()
             crq_kwargs[REPORT_TYPE] = OCP_ROS_CLUSTER_QUOTA
             row = self._init_data_row(start, end, **crq_kwargs)
-            yield self._update_data(row, start, end, cluster_quota_config=quota_config, **crq_kwargs)
+            row = self._update_data(row, start, end, cluster_quota_config=quota_config, **crq_kwargs)
+            row = self._add_common_usage_info(row, start, end, **crq_kwargs)
+            yield row
 
     def _update_ros_cluster_quota_data(self, row, start, end, **kwargs):
         """Update the data row with ClusterResourceQuota hard/used values."""

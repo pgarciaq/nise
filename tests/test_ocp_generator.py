@@ -1072,6 +1072,8 @@ class OCPGeneratorTestCase(TestCase):
         expected_columns = (
             "report_period_start",
             "report_period_end",
+            "interval_start",
+            "interval_end",
             "cluster_quota_name",
             "cpu_request_hard",
             "cpu_request_used",
@@ -1082,7 +1084,7 @@ class OCPGeneratorTestCase(TestCase):
             "memory_limit_hard",
             "memory_limit_used",
         )
-        self.assertEqual(len(OCP_ROS_CLUSTER_QUOTA_COLUMN), 11)
+        self.assertEqual(len(OCP_ROS_CLUSTER_QUOTA_COLUMN), 13)
         self.assertEqual(OCP_ROS_CLUSTER_QUOTA_COLUMN, expected_columns)
 
     def test_cluster_quota_hard_and_used_values(self):
