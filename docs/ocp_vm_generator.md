@@ -53,6 +53,22 @@ generators:
 | `fixed_usage` | dict | no | Steady usage: `cpu_pct` and `mem_pct` (0.0–1.0 of request). Used for kernel-reserve comparison pairs. |
 | `agent_install_hour` | int | no | Guest agent appears this many hours after `start_date` (late install). |
 | `agent_remove_day` | int | no | Guest agent stops after this day offset from `start_date` (removal scenario). |
+| `gpu_count` | int | no | Number of GPUs attached (0 = no GPU columns). When &gt; 0, DCGM-style GPU columns are emitted (31 CSV fields total). |
+| `gpu_model` | string | no | GPU product name (e.g. `NVIDIA A100-SXM4-80GB`, `NVIDIA T4`). Default `NVIDIA T4`. |
+| `gpu_utilization` | string | no | Utilization scenario: `idle`, `low`, `medium`, `high`, `saturated` (maps to SM/tensor/FB metrics). |
+| `gpu_mig_profile` | string | no | MIG profile label (e.g. `3g.20gb`); sets `gpu_max_slices` when present. |
+
+### GPU utilization scenarios
+
+| `gpu_utilization` | ROS classification (typical) | Notification |
+|-------------------|-------------------------------|--------------|
+| `idle` | `idle` | **50** |
+| `low` | `underutilized` | **51** |
+| `medium` | `well_utilized` | — |
+| `high` | varies | — |
+| `saturated` | `memory_saturated` on smaller GPUs (e.g. T4) or `compute_saturated` on large GPUs (e.g. A100) | **52** or **53** |
+
+Use a smaller `gpu_model` (T4) with `saturated` to exercise frame-buffer saturation (**52**); use A100 with `saturated` for compute saturation (**53**).
 
 ## Example scenarios
 
@@ -63,6 +79,8 @@ See [`examples/ocp_vm/vm_static_data.yml`](../examples/ocp_vm/vm_static_data.yml
 - Late agent install and agent removal
 - Crash loop, Windows update spike, unstable downsize, unknown OS
 - Windows vs Linux fixed-usage pair (kernel reserve testing)
+- GPU idle, underutilized MIG, memory/compute saturated, well-utilized (`gpu_count`, `gpu_utilization`)
 
-IQE and cost-onprem E2E use `iqe_cost_management/data/openshift/ocp_report_ros_vm.yml` and
-`cost-onprem-chart/tests/data/nise_templates/ocp_report_vm_enhancements.yml` with the same parameters.
+IQE and cost-onprem E2E use `iqe_cost_management/data/openshift/ocp_report_ros_vm.yml`,
+`cost-onprem-chart/tests/data/nise_templates/ocp_report_vm_enhancements.yml`, and
+`cost-onprem-chart/tests/data/nise_templates/ocp_report_vm_gpu.yml` with the same parameters.
