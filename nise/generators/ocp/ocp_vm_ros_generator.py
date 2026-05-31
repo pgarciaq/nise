@@ -250,7 +250,41 @@ class OCPVirtualMachineGenerator(AbstractGenerator):
             row["filesystem_used_bytes"] = ""
             row["filesystem_capacity_bytes"] = ""
 
+        gpu_count = int(vm.get("gpu_count", 0) or 0)
+        if gpu_count > 0:
+            row.update(self._gpu_metrics(vm))
+
         return row
+
+    def _gpu_utilization_values(self, scenario):
+        """Return DCGM-style utilization ratios for a named GPU scenario."""
+        levels = {
+            "idle": (0.01, 0.02, 0.01, 0.01, 0.01, 512),
+            "low": (0.08, 0.12, 0.10, 0.08, 0.06, 4096),
+            "medium": (0.45, 0.55, 0.40, 0.35, 0.30, 16384),
+            "high": (0.72, 0.80, 0.65, 0.55, 0.45, 32768),
+            "saturated": (0.92, 0.98, 0.88, 0.82, 0.75, 72000),
+        }
+        return levels.get(str(scenario).lower(), levels["medium"])
+
+    def _gpu_metrics(self, vm):
+        """Populate GPU columns for VMs with gpu_count > 0."""
+        gpu_count = int(vm.get("gpu_count", 0) or 0)
+        scenario = vm.get("gpu_utilization", "medium")
+        util_avg, util_max, sm_avg, tensor_avg, dram_avg, fb_max = self._gpu_utilization_values(scenario)
+        return {
+            "gpu_count": gpu_count,
+            "gpu_model": vm.get("gpu_model", "NVIDIA T4"),
+            "gpu_utilization_avg": util_avg,
+            "gpu_utilization_max": util_max,
+            "gpu_fb_used_avg_mib": fb_max * 0.6,
+            "gpu_fb_used_max_mib": fb_max,
+            "gpu_sm_active_avg": sm_avg,
+            "gpu_tensor_active_avg": tensor_avg,
+            "gpu_dram_active_avg": dram_avg,
+            "gpu_mig_profile": vm.get("gpu_mig_profile", ""),
+            "gpu_max_slices": 7 if vm.get("gpu_mig_profile") else 0,
+        }
 
     def _guest_agent_active(self, vm, interval_start):
         """Return True when guest-agent columns should be populated for this interval."""
