@@ -164,6 +164,7 @@ OCP_ROS_VM_COLUMNS = (
     "disk_write_iops",
     "disk_read_bytes_per_sec",
     "disk_write_bytes_per_sec",
+    "restart_count",
 )
 OCP_ROS_USAGE_COLUMN = (
     "interval_start",

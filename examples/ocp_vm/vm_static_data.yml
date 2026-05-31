@@ -83,6 +83,16 @@ generators:
           vcpu: 2
           memory_gib: 4
           disk_gib: 50
+        # Crash loop VM: elevated restart_count for ROS crash-loop notification (code 48)
+        - vm_name: crash-loop-vm-01
+          namespace: production
+          node_name: worker-2
+          guest_os: linux
+          guest_agent: true
+          vcpu: 4
+          memory_gib: 8
+          disk_gib: 100
+          crash_loop: true
         # Abandoned VM: zero CPU and memory usage for abandoned detection (ROS code 43)
         - vm_name: abandoned-test-vm-01
           namespace: forgotten-project

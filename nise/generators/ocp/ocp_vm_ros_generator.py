@@ -159,6 +159,7 @@ class OCPVirtualMachineGenerator(AbstractGenerator):
         disk_gib = float(vm.get("disk_gib", 50))
         abandoned = bool(vm.get("abandoned", False))
         idle = bool(vm.get("idle", False))
+        crash_loop = bool(vm.get("crash_loop", False))
         guest_os = str(vm.get("guest_os", "linux")).lower()
 
         cpu_request_mc = vcpu * 1000
@@ -197,7 +198,11 @@ class OCPVirtualMachineGenerator(AbstractGenerator):
             "disk_write_iops": 0 if abandoned else randint(50, 1000),
             "disk_read_bytes_per_sec": 0 if abandoned else randint(1024, 512000),
             "disk_write_bytes_per_sec": 0 if abandoned else randint(512, 256000),
+            "restart_count": 0,
         }
+
+        if crash_loop and not abandoned:
+            row["restart_count"] = randint(1, 3)
 
         if self._guest_agent_active(vm, interval_start):
             buffer_kib = int(memory_request_kib * uniform(0.02, 0.10))
