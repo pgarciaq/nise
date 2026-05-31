@@ -165,6 +165,17 @@ OCP_ROS_VM_COLUMNS = (
     "disk_read_bytes_per_sec",
     "disk_write_bytes_per_sec",
     "restart_count",
+    "gpu_count",
+    "gpu_model",
+    "gpu_utilization_avg",
+    "gpu_utilization_max",
+    "gpu_fb_used_avg_mib",
+    "gpu_fb_used_max_mib",
+    "gpu_sm_active_avg",
+    "gpu_tensor_active_avg",
+    "gpu_dram_active_avg",
+    "gpu_mig_profile",
+    "gpu_max_slices",
 )
 OCP_ROS_USAGE_COLUMN = (
     "interval_start",

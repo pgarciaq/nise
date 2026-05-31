@@ -181,6 +181,8 @@ class OCPVirtualMachineGeneratorTestCase(TestCase):
         """Generated columns match ros-ocp-backend VM CSV expectations."""
         self.assertEqual(tuple(OCP_ROS_VM_COLUMNS), OCP_ROS_VM_COLUMNS)
         self.assertEqual(OCP_ROS_VM_COLUMNS[19], "restart_count")
+        self.assertEqual(OCP_ROS_VM_COLUMNS[20], "gpu_count")
+        self.assertEqual(OCP_ROS_VM_COLUMNS[30], "gpu_max_slices")
 
     def test_crash_loop_vm_has_restart_count(self):
         """VMs with crash_loop=true should have restart_count > 0."""
@@ -203,6 +205,56 @@ class OCPVirtualMachineGeneratorTestCase(TestCase):
         self.assertTrue(rows)
         for row in rows:
             self.assertGreater(int(row["restart_count"]), 0)
+
+    def test_gpu_vm_generates_gpu_columns(self):
+        """VMs with gpu_count > 0 populate GPU metric columns."""
+        attributes = {
+            "vms": [
+                {
+                    "vm_name": "gpu-test-vm",
+                    "namespace": "ml",
+                    "guest_os": "linux",
+                    "guest_agent": True,
+                    "gpu_count": 1,
+                    "gpu_model": "NVIDIA T4",
+                    "gpu_utilization": "idle",
+                    "vcpu": 4,
+                    "memory_gib": 8,
+                    "disk_gib": 100,
+                }
+            ]
+        }
+        generator = OCPVirtualMachineGenerator(self.start, self.end, attributes)
+        rows = list(generator.generate_data(OCP_ROS_VM_USAGE))
+        self.assertTrue(rows)
+        row = rows[0]
+        self.assertEqual(int(row["gpu_count"]), 1)
+        self.assertEqual(row["gpu_model"], "NVIDIA T4")
+        self.assertLess(float(row["gpu_utilization_avg"]), 0.05)
+
+    def test_gpu_utilization_levels(self):
+        """GPU utilization scenarios produce increasing utilization values."""
+        levels = ["idle", "low", "medium", "high", "saturated"]
+        prev_avg = -1.0
+        for level in levels:
+            attributes = {
+                "vms": [
+                    {
+                        "vm_name": "gpu-vm",
+                        "namespace": "ml",
+                        "gpu_count": 1,
+                        "gpu_utilization": level,
+                        "vcpu": 4,
+                        "memory_gib": 8,
+                        "disk_gib": 100,
+                    }
+                ]
+            }
+            generator = OCPVirtualMachineGenerator(self.start, self.end, attributes)
+            row = next(generator.generate_data(OCP_ROS_VM_USAGE))
+            avg = float(row["gpu_utilization_avg"])
+            self.assertGreater(avg, prev_avg)
+            prev_avg = avg
 
     def test_windows_update_spike_alternates_usage(self):
         """Windows VMs with windows_update_spike=true should have high variance in CPU."""

@@ -168,3 +168,48 @@ generators:
           fixed_usage:
             cpu_pct: 0.70
             mem_pct: 0.85
+        # VM with idle GPU (passthrough)
+        - vm_name: gpu-idle-vm
+          namespace: ml-training
+          guest_os: linux
+          guest_agent: true
+          vcpu: 16
+          memory_gib: 64
+          disk_gib: 500
+          gpu_count: 1
+          gpu_model: "NVIDIA A100-SXM4-80GB"
+          gpu_utilization: idle
+        # VM with underutilized MIG GPU
+        - vm_name: gpu-underutil-mig-vm
+          namespace: inference
+          guest_os: linux
+          guest_agent: true
+          vcpu: 8
+          memory_gib: 32
+          disk_gib: 200
+          gpu_count: 1
+          gpu_model: "NVIDIA A100-SXM4-40GB"
+          gpu_mig_profile: "3g.20gb"
+          gpu_utilization: low
+        # VM with saturated GPU
+        - vm_name: gpu-saturated-vm
+          namespace: ml-training
+          guest_os: linux
+          guest_agent: true
+          vcpu: 32
+          memory_gib: 128
+          disk_gib: 1000
+          gpu_count: 2
+          gpu_model: "NVIDIA A100-SXM4-80GB"
+          gpu_utilization: saturated
+        # VM with well-utilized GPU
+        - vm_name: gpu-healthy-vm
+          namespace: inference
+          guest_os: linux
+          guest_agent: true
+          vcpu: 8
+          memory_gib: 32
+          disk_gib: 200
+          gpu_count: 1
+          gpu_model: "NVIDIA T4"
+          gpu_utilization: medium
