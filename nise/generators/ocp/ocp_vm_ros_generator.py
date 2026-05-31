@@ -122,6 +122,7 @@ class OCPVirtualMachineGenerator(AbstractGenerator):
             vm = dict(item)
             vm.setdefault("guest_agent", True)
             vm.setdefault("idle", False)
+            vm.setdefault("abandoned", False)
             vm.setdefault("guest_os", "linux")
             loaded.append(vm)
         return loaded
@@ -157,6 +158,7 @@ class OCPVirtualMachineGenerator(AbstractGenerator):
         memory_gib = float(vm.get("memory_gib", 4))
         disk_gib = float(vm.get("disk_gib", 50))
         guest_agent = bool(vm.get("guest_agent", True))
+        abandoned = bool(vm.get("abandoned", False))
         idle = bool(vm.get("idle", False))
         guest_os = str(vm.get("guest_os", "linux")).lower()
 
@@ -165,7 +167,10 @@ class OCPVirtualMachineGenerator(AbstractGenerator):
         memory_request_kib = _gib_to_kib(memory_gib)
         disk_allocated_bytes = int(disk_gib * GIGABYTE)
 
-        if idle:
+        if abandoned:
+            cpu_usage_mc = 0
+            memory_usage_kib = 0
+        elif idle:
             cpu_usage_mc = randint(5, 45)
             idle_cap = IDLE_WINDOWS_MEMORY_KIB if guest_os == "windows" else IDLE_LINUX_MEMORY_KIB
             memory_usage_kib = randint(max(1, idle_cap // 4), idle_cap)
@@ -189,10 +194,10 @@ class OCPVirtualMachineGenerator(AbstractGenerator):
             "memory_usage_kib": memory_usage_kib,
             "memory_request_kib": memory_request_kib,
             "disk_allocated_bytes": disk_allocated_bytes,
-            "disk_read_iops": randint(100, 2000),
-            "disk_write_iops": randint(50, 1000),
-            "disk_read_bytes_per_sec": randint(1024, 512000),
-            "disk_write_bytes_per_sec": randint(512, 256000),
+            "disk_read_iops": 0 if abandoned else randint(100, 2000),
+            "disk_write_iops": 0 if abandoned else randint(50, 1000),
+            "disk_read_bytes_per_sec": 0 if abandoned else randint(1024, 512000),
+            "disk_write_bytes_per_sec": 0 if abandoned else randint(512, 256000),
         }
 
         if guest_agent:
