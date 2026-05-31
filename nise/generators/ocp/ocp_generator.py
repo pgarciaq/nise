@@ -49,6 +49,7 @@ OCP_VM_USAGE = "ocp_vm_usage"
 OCP_ROS_USAGE = "ocp_ros_usage"
 OCP_ROS_NAMESPACE_USAGE = "ocp_ros_namespace_usage"
 OCP_ROS_CLUSTER_QUOTA = "ocp_ros_cluster_quota"
+OCP_ROS_VM_USAGE = "ocp_ros_vm_usage"
 OCP_GPU_USAGE = "ocp_gpu_usage"
 OCP_SNAPSHOT_INVENTORY = "ocp_snapshot_inventory"
 OCP_POD_USAGE_COLUMNS = (
@@ -142,6 +143,27 @@ OCP_VM_COLUMNS = (
     "vm_persistentvolumeclaim_name",
     "vm_disk_allocated_size_byte_seconds",
     "vm_labels",
+)
+OCP_ROS_VM_COLUMNS = (
+    "interval_start",
+    "interval_end",
+    "vm_name",
+    "namespace",
+    "node_name",
+    "guest_os",
+    "cpu_usage_mc",
+    "cpu_request_mc",
+    "cpu_limit_mc",
+    "memory_usage_kib",
+    "memory_request_kib",
+    "memory_available_kib",
+    "disk_allocated_bytes",
+    "filesystem_used_bytes",
+    "filesystem_capacity_bytes",
+    "disk_read_iops",
+    "disk_write_iops",
+    "disk_read_bytes_per_sec",
+    "disk_write_bytes_per_sec",
 )
 OCP_ROS_USAGE_COLUMN = (
     "interval_start",
@@ -294,6 +316,7 @@ ROS_OCP_REPORT_TYPE_TO_COLS = {
     OCP_ROS_USAGE: OCP_ROS_USAGE_COLUMN,
     OCP_ROS_NAMESPACE_USAGE: OCP_ROS_NAMESPACE_USAGE_COLUMN,
     OCP_ROS_CLUSTER_QUOTA: OCP_ROS_CLUSTER_QUOTA_COLUMN,
+    OCP_ROS_VM_USAGE: OCP_ROS_VM_COLUMNS,
     OCP_SNAPSHOT_INVENTORY: OCP_SNAPSHOT_INVENTORY_COLUMNS,
     OCP_STORAGE_USAGE: OCP_STORAGE_COLUMNS,
 }

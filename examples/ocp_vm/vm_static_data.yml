@@ -1,0 +1,65 @@
+---
+# OpenShift Virtualization ROS usage data for ros-ocp-backend.
+#
+# Generates ocp_ros_vm_usage.csv with 15-minute interval samples.
+#
+#   nise report ocp --static-report-file examples/ocp_vm/vm_static_data.yml \
+#     --ocp-cluster-id <YOUR-CLUSTER-UUID> --ros-ocp-info \
+#     -s 2026-05-01 -e 2026-05-03 -w
+#
+# VM-only (no pod/cost reports):
+#   nise report ocp --static-report-file examples/ocp_vm/vm_static_data.yml \
+#     --ocp-cluster-id <YOUR-CLUSTER-UUID> -s 2026-05-01 -e 2026-05-03 -w
+#
+generators:
+  - OCPVirtualMachineGenerator:
+      start_date: 2026-05-01
+      end_date: 2026-05-03
+      vms:
+        # Active Linux VM with guest agent
+        - vm_name: web-server-linux-01
+          namespace: production
+          node_name: worker-1
+          guest_os: linux
+          guest_agent: true
+          vcpu: 4
+          memory_gib: 8
+          disk_gib: 100
+        # Idle Linux VM with guest agent
+        - vm_name: idle-vm-linux-01
+          namespace: dev
+          node_name: worker-3
+          guest_os: linux
+          guest_agent: true
+          vcpu: 4
+          memory_gib: 8
+          disk_gib: 40
+          idle: true
+        # Active Windows VM with guest agent
+        - vm_name: db-server-windows-01
+          namespace: production
+          node_name: worker-2
+          guest_os: windows
+          guest_agent: true
+          vcpu: 8
+          memory_gib: 32
+          disk_gib: 500
+        # Active Linux VM without guest agent (empty guest-agent columns)
+        - vm_name: legacy-app-01
+          namespace: legacy
+          node_name: worker-1
+          guest_os: linux
+          guest_agent: false
+          vcpu: 2
+          memory_gib: 4
+          disk_gib: 50
+        # Idle Windows VM without guest agent
+        - vm_name: idle-windows-legacy-01
+          namespace: legacy
+          node_name: worker-2
+          guest_os: windows
+          guest_agent: false
+          vcpu: 2
+          memory_gib: 4
+          disk_gib: 50
+          idle: true
