@@ -123,7 +123,8 @@ class OCPVirtualMachineGenerator(AbstractGenerator):
             vm.setdefault("guest_agent", True)
             vm.setdefault("idle", False)
             vm.setdefault("abandoned", False)
-            vm.setdefault("guest_os", "linux")
+            if "guest_os" not in vm:
+                vm["guest_os"] = "linux"
             loaded.append(vm)
         return loaded
 
@@ -152,34 +153,61 @@ class OCPVirtualMachineGenerator(AbstractGenerator):
         row.update(self._build_vm_metrics(vm, start))
         return row
 
+    def _compute_cpu_mem_usage(self, vm, interval_start):  # noqa: C901
+        """Determine CPU (millicores) and memory (KiB) usage for a VM scenario."""
+        vcpu = int(vm.get("vcpu", 2))
+        memory_gib = float(vm.get("memory_gib", 4))
+        guest_os = str(vm.get("guest_os", "linux")).lower()
+
+        cpu_request_mc = vcpu * 1000
+        memory_request_kib = _gib_to_kib(memory_gib)
+
+        if bool(vm.get("abandoned", False)):
+            return 0, 0
+
+        if bool(vm.get("idle", False)):
+            idle_cap = IDLE_WINDOWS_MEMORY_KIB if guest_os == "windows" else IDLE_LINUX_MEMORY_KIB
+            return randint(5, 45), randint(max(1, idle_cap // 4), idle_cap)
+
+        fixed_usage = vm.get("fixed_usage")
+        if fixed_usage and isinstance(fixed_usage, dict):
+            cpu = int(cpu_request_mc * float(fixed_usage.get("cpu_pct", 0.40)))
+            mem = int(memory_request_kib * float(fixed_usage.get("mem_pct", 0.65)))
+            return cpu, mem
+
+        day_index = _day_offset(self.start_date, interval_start)
+        total_days = max(1, (self.end_date.date() - self.start_date.date()).days)
+
+        if bool(vm.get("downsize_unstable", False)) and _is_business_hour(interval_start):
+            if day_index >= total_days - 1:
+                return int(cpu_request_mc * 0.90), int(memory_request_kib * 0.80)
+            return int(cpu_request_mc * 0.15), int(memory_request_kib * 0.55)
+
+        if bool(vm.get("windows_update_spike", False)) and guest_os == "windows" and _is_business_hour(interval_start):
+            if interval_start.hour % 2 == 0:
+                return int(cpu_request_mc * 0.95), int(memory_request_kib * 0.85)
+            return int(cpu_request_mc * 0.35), int(memory_request_kib * 0.60)
+
+        if _is_business_hour(interval_start):
+            return int(cpu_request_mc * uniform(0.20, 0.80)), int(memory_request_kib * uniform(0.50, 0.85))
+
+        return int(cpu_request_mc * uniform(0.05, 0.15)), int(memory_request_kib * uniform(0.50, 0.85))
+
     def _build_vm_metrics(self, vm, interval_start):
         """Compute metric values for one VM at one interval."""
         vcpu = int(vm.get("vcpu", 2))
         memory_gib = float(vm.get("memory_gib", 4))
         disk_gib = float(vm.get("disk_gib", 50))
         abandoned = bool(vm.get("abandoned", False))
-        idle = bool(vm.get("idle", False))
         crash_loop = bool(vm.get("crash_loop", False))
-        guest_os = str(vm.get("guest_os", "linux")).lower()
+        guest_os = str(vm.get("guest_os", "linux")).lower() if "guest_os" in vm else "linux"
 
         cpu_request_mc = vcpu * 1000
         cpu_limit_mc = vcpu * 1000
         memory_request_kib = _gib_to_kib(memory_gib)
         disk_allocated_bytes = int(disk_gib * GIGABYTE)
 
-        if abandoned:
-            cpu_usage_mc = 0
-            memory_usage_kib = 0
-        elif idle:
-            cpu_usage_mc = randint(5, 45)
-            idle_cap = IDLE_WINDOWS_MEMORY_KIB if guest_os == "windows" else IDLE_LINUX_MEMORY_KIB
-            memory_usage_kib = randint(max(1, idle_cap // 4), idle_cap)
-        elif _is_business_hour(interval_start):
-            cpu_usage_mc = int(cpu_request_mc * uniform(0.20, 0.80))
-            memory_usage_kib = int(memory_request_kib * uniform(0.50, 0.85))
-        else:
-            cpu_usage_mc = int(cpu_request_mc * uniform(0.05, 0.15))
-            memory_usage_kib = int(memory_request_kib * uniform(0.50, 0.85))
+        cpu_usage_mc, memory_usage_kib = self._compute_cpu_mem_usage(vm, interval_start)
 
         cpu_usage_mc = max(0, min(cpu_usage_mc, cpu_limit_mc))
 
