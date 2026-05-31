@@ -195,6 +195,9 @@ generation.](docs/cost_usage_report_generation.md)
 
 [Example YAML generation.](docs/yaml_generation.md)
 
+[OpenShift Virtualization (VM) ROS data generator.](docs/ocp_vm_generator.md) — 15-minute
+`ocp_ros_vm_usage.csv` for VM recommendations (`examples/ocp_vm/vm_static_data.yml`).
+
 
 ## Contributing
 
