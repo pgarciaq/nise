@@ -71,6 +71,17 @@ class OCPVirtualMachineGeneratorTestCase(TestCase):
                     "disk_gib": 40,
                     "idle": True,
                 },
+                {
+                    "vm_name": "vm-abandoned",
+                    "namespace": "forgotten-project",
+                    "node_name": "worker-1",
+                    "guest_os": "linux",
+                    "guest_agent": True,
+                    "vcpu": 4,
+                    "memory_gib": 8,
+                    "disk_gib": 50,
+                    "abandoned": True,
+                },
             ]
         }
 
@@ -78,8 +89,8 @@ class OCPVirtualMachineGeneratorTestCase(TestCase):
         """Each VM produces 96 rows per day for the configured date range."""
         generator = OCPVirtualMachineGenerator(self.start, self.end, self.attributes)
         rows = list(generator.generate_data(OCP_ROS_VM_USAGE))
-        # 2 days * 96 intervals/day * 3 VMs
-        self.assertEqual(len(rows), 2 * 96 * 3)
+        # 2 days * 96 intervals/day * 4 VMs
+        self.assertEqual(len(rows), 2 * 96 * 4)
 
     def test_guest_agent_columns_populated_or_empty(self):
         """Guest agent VMs have filesystem metrics; others use empty strings."""
@@ -101,6 +112,17 @@ class OCPVirtualMachineGeneratorTestCase(TestCase):
         rows = [r for r in generator.generate_data(OCP_ROS_VM_USAGE) if r["vm_name"] == "vm-idle"]
         for row in rows:
             self.assertLess(int(row["cpu_usage_mc"]), 50)
+
+    def test_abandoned_vm_zero_usage(self):
+        """Abandoned VMs have zero CPU and memory usage for every interval."""
+        generator = OCPVirtualMachineGenerator(self.start, self.end, self.attributes)
+        rows = [r for r in generator.generate_data(OCP_ROS_VM_USAGE) if r["vm_name"] == "vm-abandoned"]
+        self.assertTrue(rows)
+        for row in rows:
+            self.assertEqual(int(row["cpu_usage_mc"]), 0)
+            self.assertEqual(int(row["memory_usage_kib"]), 0)
+            self.assertNotEqual(row["memory_available_kib"], "")
+            self.assertNotEqual(row["filesystem_capacity_bytes"], "")
 
     def test_csv_header_matches_ros_backend(self):
         """Generated columns match ros-ocp-backend VM CSV expectations."""
