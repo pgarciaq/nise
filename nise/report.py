@@ -86,7 +86,10 @@ from nise.generators.ocp import OCP_ROS_USAGE
 from nise.generators.ocp import OCP_ROS_NAMESPACE_USAGE
 from nise.generators.ocp import OCP_ROS_CLUSTER_QUOTA
 from nise.generators.ocp import OCP_SNAPSHOT_INVENTORY
+from nise.generators.ocp import OCP_ROS_VM_USAGE
+from nise.generators.ocp.ocp_generator import OCP_ROS_VM_COLUMNS
 from nise.generators.ocp import OCPGenerator
+from nise.generators.ocp.ocp_vm_ros_generator import OCPVirtualMachineGenerator
 from nise.manifest import aws_generate_manifest
 from nise.manifest import ocp_generate_manifest
 from nise.upload import gcp_bucket_to_dataset
@@ -518,13 +521,53 @@ def _generate_azure_account_info(static_report_data=None):
     return account_info
 
 
+def _static_report_has_vm_generator(generator_list):
+    """Return True when static YAML defines OCPVirtualMachineGenerator."""
+    if not generator_list:
+        return False
+    for item in generator_list:
+        if "OCPVirtualMachineGenerator" in item:
+            return True
+    return False
+
+
+def _ensure_vm_ros_generator(generators, ros_ocp_info, static_report_data, report_start_date, report_end_date):
+    """Append a VM ROS generator when --ros-ocp-info is set without explicit YAML entry."""
+    if not ros_ocp_info or _static_report_has_vm_generator(
+        static_report_data.get("generators") if static_report_data else None
+    ):
+        return generators
+    start_date = report_start_date
+    end_date = report_end_date
+    for generator in generators:
+        attributes = generator.get("attributes") or {}
+        if attributes.get("start_date"):
+            start_date = attributes.get("start_date")
+        if attributes.get("end_date"):
+            end_date = attributes.get("end_date")
+    if not start_date or not end_date:
+        return generators
+    generators.append(
+        {
+            "generator": OCPVirtualMachineGenerator,
+            "attributes": {"start_date": start_date, "end_date": end_date},
+        }
+    )
+    return generators
+
+
 def _get_generators(generator_list):
     """Collect a list of report generators."""
     generators = []
     if generator_list:
         for item in generator_list:
             for generator_cls, attributes in item.items():
-                generator_obj = {"generator": getattr(importlib.import_module(__name__), generator_cls)}
+                module = importlib.import_module(__name__)
+                if generator_cls == "OCPVirtualMachineGenerator":
+                    generator_class = OCPVirtualMachineGenerator
+                else:
+                    generator_class = getattr(module, generator_cls)
+                generator_obj = {"generator": generator_class}
                 if attributes.get("start_date"):
                     attributes["start_date"] = parser.parse(attributes.get("start_date")).replace(tzinfo=UTC)
                 if attributes.get("end_date"):
@@ -910,6 +953,11 @@ def ocp_create_report(options):  # noqa: C901
         generators = _get_generators(static_report_data.get("generators"))
     else:
         generators = [{"generator": OCPGenerator, "attributes": {}}]
+    generators = _ensure_vm_ros_generator(generators, ros_ocp_info, static_report_data, start_date, end_date)
+    has_vm_generator = (
+        _static_report_has_vm_generator(static_report_data.get("generators") if static_report_data else None)
+        or ros_ocp_info
+    )
 
     months = _create_month_list(start_date, end_date)
     insights_upload = options.get("insights_upload")
@@ -917,17 +965,21 @@ def ocp_create_report(options):  # noqa: C901
     write_monthly = options.get("write_monthly", False)
     for month in months:
         if ros_only:
-            report_types = ROS_OCP_REPORT_TYPE_TO_COLS
+            report_types = dict(ROS_OCP_REPORT_TYPE_TO_COLS)
         elif ros_ocp_info:
-            report_types = OCP_REPORT_TYPE_TO_COLS
+            report_types = dict(OCP_REPORT_TYPE_TO_COLS)
         else:
-            report_types = COST_OCP_REPORT_TYPE_TO_COLS
+            report_types = dict(COST_OCP_REPORT_TYPE_TO_COLS)
+        if has_vm_generator and OCP_ROS_VM_USAGE not in report_types:
+            report_types[OCP_ROS_VM_USAGE] = OCP_ROS_VM_COLUMNS
 
         data = {rt: [] for rt in report_types}
         file_numbers = {rt: 0 for rt in report_types}
 
         monthly_files = []
         monthly_ros_files = []
+        flush_report_types = set()
+        last_gen_start_date = month.get("start")
         for generator in generators:
             generator_cls = generator.get("generator")
             attributes = generator.get("attributes")
@@ -945,6 +997,8 @@ def ocp_create_report(options):  # noqa: C901
             gen = generator_cls(
                 gen_start_date, gen_end_date, attributes, ros_ocp_info, constant_values_ros_ocp, ros_only
             )
+            last_gen_start_date = gen_start_date
+            flush_report_types.update(gen.ocp_report_generation.keys())
             for report_type in gen.ocp_report_generation.keys():
                 LOG.info(f"Generating data for {report_type} for {month}")
                 for hour in gen.generate_data(report_type):
@@ -962,7 +1016,9 @@ def ocp_create_report(options):  # noqa: C901
                         monthly_files.append(month_output_file)
                         data[report_type].clear()
 
-        for report_type in gen.ocp_report_generation.keys():
+        for report_type in flush_report_types:
+            if not data.get(report_type):
+                continue
             if file_numbers[report_type] != 0:
                 file_numbers[report_type] += 1
 
@@ -970,7 +1026,7 @@ def ocp_create_report(options):  # noqa: C901
                 file_numbers[report_type],
                 cluster_id,
                 month.get("name"),
-                gen_start_date.year,
+                last_gen_start_date.year,
                 report_type,
                 data[report_type],
             )
@@ -978,6 +1034,7 @@ def ocp_create_report(options):  # noqa: C901
                 OCP_ROS_USAGE,
                 OCP_ROS_NAMESPACE_USAGE,
                 OCP_ROS_CLUSTER_QUOTA,
+                OCP_ROS_VM_USAGE,
                 OCP_SNAPSHOT_INVENTORY,
             ):
                 monthly_ros_files.append(month_output_file)
@@ -1025,6 +1082,20 @@ def ocp_create_report(options):  # noqa: C901
                     period_start = gen_start_date.strftime("%Y%m%d")
                     period_end = gen_end_date.strftime("%Y%m%d")
                     temp_filename = f"ros-openshift-cluster-quota-{period_start}-{period_end}.{current_file_number}.csv"
+                elif "ocp_ros_vm_usage" in original_file:
+                    basename = os.path.basename(original_file)
+                    parts = basename.split("-")
+                    if len(parts) >= 2:
+                        month_name = parts[0]
+                        year = parts[1]
+                        try:
+                            month_num = datetime.strptime(month_name, "%B").month
+                            yearmonth_part = f"{year}{month_num:02d}"
+                        except ValueError:
+                            yearmonth_part = f"{year}{datetime.now().month:02d}"
+                    else:
+                        yearmonth_part = f"{datetime.now().year}{datetime.now().month:02d}"
+                    temp_filename = f"ros-openshift-vm-usage-{yearmonth_part}.{current_file_number}.csv"
                 elif "ocp_snapshot_inventory" in original_file:
                     basename = os.path.basename(original_file)
                     parts = basename.split("-")
