@@ -157,7 +157,6 @@ class OCPVirtualMachineGenerator(AbstractGenerator):
         vcpu = int(vm.get("vcpu", 2))
         memory_gib = float(vm.get("memory_gib", 4))
         disk_gib = float(vm.get("disk_gib", 50))
-        guest_agent = bool(vm.get("guest_agent", True))
         abandoned = bool(vm.get("abandoned", False))
         idle = bool(vm.get("idle", False))
         guest_os = str(vm.get("guest_os", "linux")).lower()
@@ -200,7 +199,7 @@ class OCPVirtualMachineGenerator(AbstractGenerator):
             "disk_write_bytes_per_sec": 0 if abandoned else randint(512, 256000),
         }
 
-        if guest_agent:
+        if self._guest_agent_active(vm, interval_start):
             buffer_kib = int(memory_request_kib * uniform(0.02, 0.10))
             row["memory_available_kib"] = max(0, memory_request_kib - memory_usage_kib + buffer_kib)
             row["filesystem_capacity_bytes"] = disk_allocated_bytes
@@ -219,6 +218,21 @@ class OCPVirtualMachineGenerator(AbstractGenerator):
             row["filesystem_capacity_bytes"] = ""
 
         return row
+
+    def _guest_agent_active(self, vm, interval_start):
+        """Return True when guest-agent columns should be populated for this interval."""
+        remove_day = vm.get("agent_remove_day")
+        if remove_day is not None:
+            return _day_offset(self.start_date, interval_start) < int(remove_day)
+
+        if not bool(vm.get("guest_agent", True)):
+            return False
+
+        install_hour = vm.get("agent_install_hour")
+        if install_hour is not None:
+            elapsed_hours = (interval_start - self.start_date).total_seconds() / 3600.0
+            return elapsed_hours >= float(install_hour)
+        return True
 
     def _gen_quarter_hourly_vm_usage(self, **kwargs):
         """Create 15-minute interval data for each configured VM."""
