@@ -31,6 +31,11 @@ from nise.report import _static_report_has_vm_generator
 from nise.report import ocp_create_report
 
 
+def _interval_hour(interval_start):
+    """Extract hour from OCP VM ROS interval_start timestamp."""
+    return int(interval_start[11:13])
+
+
 class OCPVirtualMachineGeneratorTestCase(TestCase):
     """Tests for OCPVirtualMachineGenerator."""
 
@@ -175,6 +180,158 @@ class OCPVirtualMachineGeneratorTestCase(TestCase):
     def test_csv_header_matches_ros_backend(self):
         """Generated columns match ros-ocp-backend VM CSV expectations."""
         self.assertEqual(tuple(OCP_ROS_VM_COLUMNS), OCP_ROS_VM_COLUMNS)
+        self.assertEqual(OCP_ROS_VM_COLUMNS[19], "restart_count")
+
+    def test_crash_loop_vm_has_restart_count(self):
+        """VMs with crash_loop=true should have restart_count > 0."""
+        attributes = {
+            "vms": [
+                {
+                    "vm_name": "crash-loop-vm",
+                    "namespace": "production",
+                    "guest_os": "linux",
+                    "guest_agent": True,
+                    "crash_loop": True,
+                    "vcpu": 4,
+                    "memory_gib": 8,
+                    "disk_gib": 100,
+                }
+            ]
+        }
+        generator = OCPVirtualMachineGenerator(self.start, self.end, attributes)
+        rows = list(generator.generate_data(OCP_ROS_VM_USAGE))
+        self.assertTrue(rows)
+        for row in rows:
+            self.assertGreater(int(row["restart_count"]), 0)
+
+    def test_windows_update_spike_alternates_usage(self):
+        """Windows VMs with windows_update_spike=true should have high variance in CPU."""
+        attributes = {
+            "vms": [
+                {
+                    "vm_name": "windows-spike-vm",
+                    "namespace": "production",
+                    "guest_os": "windows",
+                    "guest_agent": True,
+                    "windows_update_spike": True,
+                    "vcpu": 4,
+                    "memory_gib": 16,
+                    "disk_gib": 200,
+                }
+            ]
+        }
+        generator = OCPVirtualMachineGenerator(self.start, self.end, attributes)
+        rows = list(generator.generate_data(OCP_ROS_VM_USAGE))
+        business_hour_rows = [r for r in rows if 8 <= _interval_hour(r["interval_start"]) < 18]
+        self.assertTrue(business_hour_rows)
+        cpu_values = {int(r["cpu_usage_mc"]) for r in business_hour_rows}
+        self.assertGreater(len(cpu_values), 1)
+        self.assertGreater(max(cpu_values) - min(cpu_values), 1000)
+
+    def test_downsize_unstable_last_day_spike(self):
+        """VMs with downsize_unstable=true should have higher usage on the last day."""
+        start = datetime.datetime(2026, 5, 1, 0, 0, 0, tzinfo=datetime.UTC)
+        end = datetime.datetime(2026, 5, 4, 0, 0, 0, tzinfo=datetime.UTC)
+        attributes = {
+            "vms": [
+                {
+                    "vm_name": "downsize-vm",
+                    "namespace": "staging",
+                    "guest_os": "linux",
+                    "guest_agent": True,
+                    "downsize_unstable": True,
+                    "vcpu": 8,
+                    "memory_gib": 16,
+                    "disk_gib": 100,
+                }
+            ]
+        }
+        generator = OCPVirtualMachineGenerator(start, end, attributes)
+        rows = list(generator.generate_data(OCP_ROS_VM_USAGE))
+
+        def _business_hour_cpu(day_prefix):
+            day_rows = [
+                r
+                for r in rows
+                if r["interval_start"].startswith(day_prefix) and 8 <= _interval_hour(r["interval_start"]) < 18
+            ]
+            return [int(r["cpu_usage_mc"]) for r in day_rows]
+
+        early_cpu = _business_hour_cpu("2026-05-01 ")
+        early_cpu.extend(_business_hour_cpu("2026-05-02 "))
+        last_day_cpu = _business_hour_cpu("2026-05-03 ")
+        self.assertTrue(early_cpu)
+        self.assertTrue(last_day_cpu)
+        self.assertGreater(sum(last_day_cpu) / len(last_day_cpu), sum(early_cpu) / len(early_cpu) * 3)
+
+    def test_fixed_usage_deterministic(self):
+        """VMs with fixed_usage should produce consistent CPU/memory percentages."""
+        attributes = {
+            "vms": [
+                {
+                    "vm_name": "fixed-usage-vm",
+                    "namespace": "production",
+                    "guest_os": "linux",
+                    "guest_agent": True,
+                    "vcpu": 4,
+                    "memory_gib": 8,
+                    "disk_gib": 100,
+                    "fixed_usage": {"cpu_pct": 0.50, "mem_pct": 0.70},
+                }
+            ]
+        }
+        generator = OCPVirtualMachineGenerator(self.start, self.end, attributes)
+        rows = list(generator.generate_data(OCP_ROS_VM_USAGE))
+        cpu_request_mc = 4000
+        memory_request_kib = 8 * 1024 * 1024
+        expected_cpu = int(cpu_request_mc * 0.50)
+        expected_mem = int(memory_request_kib * 0.70)
+        self.assertTrue(rows)
+        for row in rows:
+            self.assertEqual(int(row["cpu_usage_mc"]), expected_cpu)
+            self.assertEqual(int(row["memory_usage_kib"]), expected_mem)
+
+    def test_empty_guest_os_produces_empty_string(self):
+        """VMs with guest_os="" should have empty guest_os in output rows."""
+        attributes = {
+            "vms": [
+                {
+                    "vm_name": "unknown-os-vm",
+                    "namespace": "production",
+                    "guest_os": "",
+                    "guest_agent": False,
+                    "vcpu": 2,
+                    "memory_gib": 4,
+                    "disk_gib": 50,
+                }
+            ]
+        }
+        generator = OCPVirtualMachineGenerator(self.start, self.end, attributes)
+        rows = list(generator.generate_data(OCP_ROS_VM_USAGE))
+        self.assertTrue(rows)
+        for row in rows:
+            self.assertEqual(row["guest_os"], "")
+
+    def test_restart_count_zero_for_non_crash_loop(self):
+        """Normal VMs should have restart_count = 0."""
+        attributes = {
+            "vms": [
+                {
+                    "vm_name": "normal-vm",
+                    "namespace": "production",
+                    "guest_os": "linux",
+                    "guest_agent": True,
+                    "vcpu": 4,
+                    "memory_gib": 8,
+                    "disk_gib": 100,
+                }
+            ]
+        }
+        generator = OCPVirtualMachineGenerator(self.start, self.end, attributes)
+        rows = list(generator.generate_data(OCP_ROS_VM_USAGE))
+        self.assertTrue(rows)
+        for row in rows:
+            self.assertEqual(int(row["restart_count"]), 0)
 
     def test_static_report_helpers(self):
         """VM generator detection and auto-injection helpers behave as expected."""
