@@ -113,6 +113,54 @@ class OCPVirtualMachineGeneratorTestCase(TestCase):
         for row in rows:
             self.assertLess(int(row["cpu_usage_mc"]), 50)
 
+    def test_agent_install_hour_defers_guest_columns(self):
+        """Rows before agent_install_hour have empty guest-agent columns."""
+        attributes = {
+            "vms": [
+                {
+                    "vm_name": "late-agent",
+                    "namespace": "production",
+                    "guest_agent": True,
+                    "agent_install_hour": 2,
+                    "vcpu": 2,
+                    "memory_gib": 4,
+                    "disk_gib": 20,
+                }
+            ]
+        }
+        generator = OCPVirtualMachineGenerator(self.start, self.end, attributes)
+        rows = list(generator.generate_data(OCP_ROS_VM_USAGE))
+        before = [r for r in rows if r["interval_start"].startswith("2026-05-01 00:")]
+        after = [r for r in rows if r["interval_start"].startswith("2026-05-01 02:")]
+        self.assertTrue(before)
+        self.assertTrue(after)
+        self.assertEqual(before[0]["memory_available_kib"], "")
+        self.assertNotEqual(after[0]["memory_available_kib"], "")
+
+    def test_agent_remove_day_clears_guest_columns(self):
+        """Rows on or after agent_remove_day have empty guest-agent columns."""
+        attributes = {
+            "vms": [
+                {
+                    "vm_name": "removed-agent",
+                    "namespace": "staging",
+                    "guest_agent": False,
+                    "agent_remove_day": 1,
+                    "vcpu": 2,
+                    "memory_gib": 4,
+                    "disk_gib": 20,
+                }
+            ]
+        }
+        generator = OCPVirtualMachineGenerator(self.start, self.end, attributes)
+        rows = list(generator.generate_data(OCP_ROS_VM_USAGE))
+        day0 = [r for r in rows if r["interval_start"].startswith("2026-05-01 ")]
+        day1 = [r for r in rows if r["interval_start"].startswith("2026-05-02 ")]
+        self.assertTrue(day0)
+        self.assertTrue(day1)
+        self.assertNotEqual(day0[0]["memory_available_kib"], "")
+        self.assertEqual(day1[0]["memory_available_kib"], "")
+
     def test_abandoned_vm_zero_usage(self):
         """Abandoned VMs have zero CPU and memory usage for every interval."""
         generator = OCPVirtualMachineGenerator(self.start, self.end, self.attributes)

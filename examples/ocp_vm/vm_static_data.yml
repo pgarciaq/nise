@@ -63,6 +63,26 @@ generators:
           memory_gib: 4
           disk_gib: 50
           idle: true
+        # Guest agent appears 2 hours after report start (late install scenario)
+        - vm_name: late-agent-install-vm
+          namespace: production
+          node_name: worker-1
+          guest_os: linux
+          guest_agent: true
+          agent_install_hour: 2
+          vcpu: 4
+          memory_gib: 8
+          disk_gib: 100
+        # Guest agent for first 5 days only (removal scenario)
+        - vm_name: agent-removed-vm
+          namespace: staging
+          node_name: worker-2
+          guest_os: linux
+          guest_agent: false
+          agent_remove_day: 5
+          vcpu: 2
+          memory_gib: 4
+          disk_gib: 50
         # Abandoned VM: zero CPU and memory usage for abandoned detection (ROS code 43)
         - vm_name: abandoned-test-vm-01
           namespace: forgotten-project
