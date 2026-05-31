@@ -103,3 +103,56 @@ generators:
           memory_gib: 8
           disk_gib: 50
           abandoned: true
+        # Windows VM with periodic update spikes (notification 47)
+        - vm_name: windows-update-spike-vm
+          namespace: production
+          node_name: worker-2
+          guest_os: windows
+          guest_agent: true
+          vcpu: 4
+          memory_gib: 16
+          disk_gib: 200
+          windows_update_spike: true
+        # VM with unstable downsize pattern (notification 49)
+        - vm_name: downsize-unstable-vm
+          namespace: staging
+          node_name: worker-1
+          guest_os: linux
+          guest_agent: true
+          vcpu: 8
+          memory_gib: 16
+          disk_gib: 100
+          downsize_unstable: true
+        # VM with empty guest_os (notification 46)
+        - vm_name: unknown-os-vm
+          namespace: production
+          node_name: worker-3
+          guest_os: ""
+          guest_agent: false
+          vcpu: 2
+          memory_gib: 4
+          disk_gib: 50
+        # Windows VM with fixed high usage (kernel reserve comparison)
+        - vm_name: windows-high-usage-vm
+          namespace: production
+          node_name: worker-2
+          guest_os: windows
+          guest_agent: true
+          vcpu: 4
+          memory_gib: 8
+          disk_gib: 100
+          fixed_usage:
+            cpu_pct: 0.70
+            mem_pct: 0.85
+        # Linux VM with same fixed usage (kernel reserve comparison pair)
+        - vm_name: linux-high-usage-vm
+          namespace: production
+          node_name: worker-1
+          guest_os: linux
+          guest_agent: true
+          vcpu: 4
+          memory_gib: 8
+          disk_gib: 100
+          fixed_usage:
+            cpu_pct: 0.70
+            mem_pct: 0.85
