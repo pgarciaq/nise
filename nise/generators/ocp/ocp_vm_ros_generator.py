@@ -206,6 +206,31 @@ class OCPVirtualMachineGenerator(AbstractGenerator):
 
         return int(cpu_request_mc * uniform(0.05, 0.15)), int(memory_request_kib * uniform(0.50, 0.85))
 
+    def _compute_disk_io(self, vm, abandoned):
+        """Return disk I/O metrics for one VM (IOPS and bytes/sec)."""
+        if abandoned:
+            return 0, 0, 0, 0
+        read_iops = randint(100, 2000)
+        write_iops = randint(50, 1000)
+        read_bps = randint(1024, 512000)
+        write_bps = randint(512, 256000)
+        if bool(vm.get("high_io", False)):
+            read_iops = 6000
+            write_iops = 6000
+            read_bps = 2_000_000
+            write_bps = 1_000_000
+        elif bool(vm.get("sequential_io", False)):
+            read_iops = 800
+            write_iops = 400
+            read_bps = read_iops * 131072
+            write_bps = write_iops * 131072
+        elif bool(vm.get("random_io", False)):
+            read_iops = 2500
+            write_iops = 1500
+            read_bps = read_iops * 4096
+            write_bps = write_iops * 4096
+        return read_iops, write_iops, read_bps, write_bps
+
     def _build_vm_metrics(self, vm, interval_start):
         """Compute metric values for one VM at one interval."""
         vcpu = int(vm.get("vcpu", 2))
@@ -227,16 +252,7 @@ class OCPVirtualMachineGenerator(AbstractGenerator):
 
         cpu_usage_mc = max(0, min(cpu_usage_mc, cpu_limit_mc))
 
-        read_iops = 0 if abandoned else randint(100, 2000)
-        write_iops = 0 if abandoned else randint(50, 1000)
-        read_bps = 0 if abandoned else randint(1024, 512000)
-        write_bps = 0 if abandoned else randint(512, 256000)
-        if bool(vm.get("high_io", False)) and not abandoned:
-            # Default ROS_VM_HIGH_IOPS_THRESHOLD is 3000; use 2x per direction for notification 39.
-            read_iops = 6000
-            write_iops = 6000
-            read_bps = 2_000_000
-            write_bps = 1_000_000
+        read_iops, write_iops, read_bps, write_bps = self._compute_disk_io(vm, abandoned)
 
         net_rx_bps = net_tx_bps = net_rx_pps = net_tx_pps = net_rx_drops = net_tx_drops = 0.0
         if bool(vm.get("network_heavy", False)) and not abandoned:

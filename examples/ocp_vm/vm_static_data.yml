@@ -22,6 +22,8 @@
 #   downsize_unstable (bool)     - performance downsize held (notification 49)
 #   oversized_for_instance_type (bool) - low usage on large VM; notification 41 with catalog
 #   high_io (bool)               - disk IOPS above ROS_VM_HIGH_IOPS_THRESHOLD (notification 39)
+#   sequential_io (bool)         - large block I/O, avg size >= 64 KiB (notification 58)
+#   random_io (bool)             - small random I/O, avg size < 16 KiB (notification 59)
 #   fixed_usage (dict)           - cpu_pct, mem_pct steady load (kernel-reserve tests)
 #   guest_os (str)               - linux, windows, or "" for unknown OS (notification 46)
 #
@@ -286,6 +288,26 @@ generators:
           memory_gib: 8
           disk_gib: 100
           high_io: true
+        # Sequential disk I/O pattern (notification 58)
+        - vm_name: sequential-io-vm-01
+          namespace: vm-notifications
+          node_name: worker-2
+          guest_os: linux
+          guest_agent: true
+          vcpu: 4
+          memory_gib: 8
+          disk_gib: 100
+          sequential_io: true
+        # Random disk I/O pattern (notification 59)
+        - vm_name: random-io-vm-01
+          namespace: vm-notifications
+          node_name: worker-2
+          guest_os: linux
+          guest_agent: true
+          vcpu: 4
+          memory_gib: 8
+          disk_gib: 100
+          random_io: true
         # Network-saturated workload for n1 recommendations (notification 55)
         - vm_name: network-heavy-vm-01
           namespace: vm-notifications
