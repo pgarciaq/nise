@@ -275,6 +275,19 @@ generators:
           memory_gib: 8
           disk_gib: 100
           high_io: true
+        # Network-saturated workload for n1 recommendations (notification 55)
+        - vm_name: network-heavy-vm-01
+          namespace: vm-notifications
+          node_name: worker-2
+          guest_os: linux
+          guest_agent: true
+          vcpu: 4
+          memory_gib: 16
+          disk_gib: 100
+          network_heavy: true
+          fixed_usage:
+            cpu_pct: 0.35
+            mem_pct: 0.50
         # Pair with cluster_instance_types.json vm_preferences for preference API fields
         - vm_name: preference-server-vm
           namespace: production

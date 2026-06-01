@@ -186,6 +186,8 @@ class OCPVirtualMachineGeneratorTestCase(TestCase):
         self.assertEqual(OCP_ROS_VM_COLUMNS[19], "restart_count")
         self.assertEqual(OCP_ROS_VM_COLUMNS[20], "gpu_count")
         self.assertEqual(OCP_ROS_VM_COLUMNS[30], "gpu_max_slices")
+        self.assertEqual(OCP_ROS_VM_COLUMNS[31], "net_rx_bytes_per_sec")
+        self.assertEqual(OCP_ROS_VM_COLUMNS[36], "net_tx_drops_per_sec")
 
     def test_crash_loop_vm_has_restart_count(self):
         """VMs with crash_loop=true should have restart_count > 0."""
