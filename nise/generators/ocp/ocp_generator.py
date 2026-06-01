@@ -50,6 +50,7 @@ OCP_ROS_USAGE = "ocp_ros_usage"
 OCP_ROS_NAMESPACE_USAGE = "ocp_ros_namespace_usage"
 OCP_ROS_CLUSTER_QUOTA = "ocp_ros_cluster_quota"
 OCP_ROS_VM_USAGE = "ocp_ros_vm_usage"
+OCP_ROS_VM_GPU_DEVICE = "ocp_ros_vm_gpu_device"
 OCP_GPU_USAGE = "ocp_gpu_usage"
 OCP_SNAPSHOT_INVENTORY = "ocp_snapshot_inventory"
 OCP_POD_USAGE_COLUMNS = (
@@ -176,6 +177,22 @@ OCP_ROS_VM_COLUMNS = (
     "gpu_dram_active_avg",
     "gpu_mig_profile",
     "gpu_max_slices",
+)
+OCP_ROS_VM_GPU_DEVICE_COLUMNS = (
+    "interval_start",
+    "namespace",
+    "vm_name",
+    "gpu_uuid",
+    "gpu_model",
+    "utilization_avg",
+    "utilization_max",
+    "fb_used_avg_mib",
+    "fb_used_max_mib",
+    "sm_active_avg",
+    "tensor_active_avg",
+    "dram_active_avg",
+    "mig_profile",
+    "max_slices",
 )
 OCP_ROS_USAGE_COLUMN = (
     "interval_start",
@@ -329,6 +346,7 @@ ROS_OCP_REPORT_TYPE_TO_COLS = {
     OCP_ROS_NAMESPACE_USAGE: OCP_ROS_NAMESPACE_USAGE_COLUMN,
     OCP_ROS_CLUSTER_QUOTA: OCP_ROS_CLUSTER_QUOTA_COLUMN,
     OCP_ROS_VM_USAGE: OCP_ROS_VM_COLUMNS,
+    OCP_ROS_VM_GPU_DEVICE: OCP_ROS_VM_GPU_DEVICE_COLUMNS,
     OCP_SNAPSHOT_INVENTORY: OCP_SNAPSHOT_INVENTORY_COLUMNS,
     OCP_STORAGE_USAGE: OCP_STORAGE_COLUMNS,
 }
