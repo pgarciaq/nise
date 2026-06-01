@@ -316,6 +316,8 @@ class OCPVirtualMachineGenerator(AbstractGenerator):
             "medium": (0.45, 0.55, 0.40, 0.35, 0.30, 16384),
             "high": (0.72, 0.80, 0.65, 0.55, 0.45, 32768),
             "saturated": (0.92, 0.98, 0.88, 0.82, 0.75, 72000),
+            # Low SM/DRAM with frame-buffer >80% of T4 VRAM (notification 57).
+            "fb_saturated": (0.25, 0.28, 0.22, 0.20, 0.18, 15000),
         }
         return levels.get(str(scenario).lower(), levels["medium"])
 
