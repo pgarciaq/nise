@@ -19,10 +19,13 @@
 import csv
 import datetime
 import os
+import statistics
 import tempfile
 from unittest import TestCase
 
 from nise.generators.ocp.ocp_generator import OCP_ROS_VM_COLUMNS
+from nise.generators.ocp.ocp_generator import OCP_ROS_VM_GPU_DEVICE
+from nise.generators.ocp.ocp_generator import OCP_ROS_VM_GPU_DEVICE_COLUMNS
 from nise.generators.ocp.ocp_generator import OCP_ROS_VM_USAGE
 from nise.generators.ocp.ocp_vm_ros_generator import OCPVirtualMachineGenerator
 from nise.report import _ensure_vm_ros_generator
@@ -384,6 +387,145 @@ class OCPVirtualMachineGeneratorTestCase(TestCase):
         self.assertTrue(rows)
         for row in rows:
             self.assertEqual(int(row["restart_count"]), 0)
+
+    def test_gpu_device_csv_generation(self):
+        """gpu_devices in YAML produces ocp_ros_vm_gpu_device rows with expected columns."""
+        attributes = {
+            "vms": [
+                {
+                    "vm_name": "multi-gpu-vm",
+                    "namespace": "ml-training",
+                    "node_name": "worker-gpu-1",
+                    "guest_os": "linux",
+                    "guest_agent": True,
+                    "vcpu": 16,
+                    "memory_gib": 64,
+                    "disk_gib": 500,
+                    "gpu_devices": [
+                        {
+                            "uuid": "GPU-aaa-111",
+                            "model": "NVIDIA A100-SXM4-80GB",
+                            "utilization": "high",
+                        },
+                    ],
+                }
+            ]
+        }
+        generator = OCPVirtualMachineGenerator(self.start, self.end, attributes)
+        rows = list(generator.generate_data(OCP_ROS_VM_GPU_DEVICE))
+        self.assertEqual(len(rows), 2 * 96 * 1)
+        self.assertEqual(set(rows[0].keys()), set(OCP_ROS_VM_GPU_DEVICE_COLUMNS))
+        self.assertEqual(rows[0]["vm_name"], "multi-gpu-vm")
+        self.assertEqual(rows[0]["gpu_uuid"], "GPU-aaa-111")
+        self.assertEqual(rows[0]["gpu_model"], "NVIDIA A100-SXM4-80GB")
+        self.assertGreater(float(rows[0]["utilization_avg"]), 0)
+
+    def test_gpu_device_csv_multi_gpu(self):
+        """Two gpu_devices produce two rows per interval."""
+        attributes = {
+            "vms": [
+                {
+                    "vm_name": "multi-gpu-vm",
+                    "namespace": "ml-training",
+                    "node_name": "worker-gpu-1",
+                    "guest_os": "linux",
+                    "guest_agent": True,
+                    "vcpu": 16,
+                    "memory_gib": 64,
+                    "disk_gib": 500,
+                    "gpu_devices": [
+                        {"uuid": "GPU-aaa-111", "model": "NVIDIA A100", "utilization": "high"},
+                        {"uuid": "GPU-bbb-222", "model": "NVIDIA A100", "utilization": "idle"},
+                    ],
+                }
+            ]
+        }
+        generator = OCPVirtualMachineGenerator(self.start, self.end, attributes)
+        rows = list(generator.generate_data(OCP_ROS_VM_GPU_DEVICE))
+        self.assertEqual(len(rows), 2 * 96 * 2)
+        uuids_per_interval = {}
+        for row in rows:
+            key = row["interval_start"]
+            uuids_per_interval.setdefault(key, set()).add(row["gpu_uuid"])
+        for uuids in uuids_per_interval.values():
+            self.assertEqual(uuids, {"GPU-aaa-111", "GPU-bbb-222"})
+
+    def test_gpu_device_csv_no_gpu(self):
+        """VMs without GPU config produce no device CSV rows."""
+        attributes = {
+            "vms": [
+                {
+                    "vm_name": "no-gpu-vm",
+                    "namespace": "production",
+                    "node_name": "worker-1",
+                    "guest_os": "linux",
+                    "guest_agent": True,
+                    "vcpu": 4,
+                    "memory_gib": 8,
+                    "disk_gib": 100,
+                }
+            ]
+        }
+        generator = OCPVirtualMachineGenerator(self.start, self.end, attributes)
+        rows = list(generator.generate_data(OCP_ROS_VM_GPU_DEVICE))
+        self.assertEqual(rows, [])
+
+    def test_variable_cpu_pattern(self):
+        """cpu_pattern: variable yields high CPU usage coefficient of variation."""
+        attributes = {
+            "vms": [
+                {
+                    "vm_name": "variable-cpu-vm",
+                    "namespace": "batch-jobs",
+                    "node_name": "worker-1",
+                    "guest_os": "linux",
+                    "guest_agent": True,
+                    "vcpu": 4,
+                    "memory_gib": 8,
+                    "disk_gib": 100,
+                    "cpu_pattern": "variable",
+                }
+            ]
+        }
+        generator = OCPVirtualMachineGenerator(self.start, self.end, attributes)
+        rows = list(generator.generate_data(OCP_ROS_VM_USAGE))
+        cpu_values = [int(r["cpu_usage_mc"]) for r in rows]
+        self.assertGreater(len(cpu_values), 10)
+        mean_cpu = statistics.mean(cpu_values)
+        stdev_cpu = statistics.stdev(cpu_values)
+        cv = stdev_cpu / mean_cpu if mean_cpu else 0
+        self.assertGreater(cv, 0.35, f"expected high CPU variability, cv={cv:.3f}")
+
+    def test_multi_gpu_mixed_utilization(self):
+        """Per-device utilization scenarios produce distinct metric values."""
+        attributes = {
+            "vms": [
+                {
+                    "vm_name": "multi-gpu-mixed-vm",
+                    "namespace": "ml-training",
+                    "node_name": "worker-gpu-1",
+                    "guest_os": "linux",
+                    "guest_agent": True,
+                    "vcpu": 16,
+                    "memory_gib": 64,
+                    "disk_gib": 500,
+                    "gpu_devices": [
+                        {"uuid": "GPU-aaa-111", "utilization": "idle"},
+                        {"uuid": "GPU-bbb-222", "utilization": "saturated"},
+                    ],
+                }
+            ]
+        }
+        generator = OCPVirtualMachineGenerator(self.start, self.end, attributes)
+        rows = list(generator.generate_data(OCP_ROS_VM_GPU_DEVICE))
+        by_uuid = {}
+        for row in rows:
+            by_uuid.setdefault(row["gpu_uuid"], []).append(float(row["utilization_avg"]))
+        idle_avg = statistics.mean(by_uuid["GPU-aaa-111"])
+        sat_avg = statistics.mean(by_uuid["GPU-bbb-222"])
+        self.assertLess(idle_avg, sat_avg)
+        self.assertLess(idle_avg, 0.05)
+        self.assertGreater(sat_avg, 0.5)
 
     def test_static_report_helpers(self):
         """VM generator detection and auto-injection helpers behave as expected."""

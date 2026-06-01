@@ -57,6 +57,24 @@ generators:
 | `gpu_model` | string | no | GPU product name (e.g. `NVIDIA A100-SXM4-80GB`, `NVIDIA T4`). Default `NVIDIA T4`. |
 | `gpu_utilization` | string | no | Utilization scenario: `idle`, `low`, `medium`, `high`, `saturated` (maps to SM/tensor/FB metrics). |
 | `gpu_mig_profile` | string | no | MIG profile label (e.g. `3g.20gb`); sets `gpu_max_slices` when present. |
+| `gpu_devices` | list | no | Per-GPU configs when `gpu_count` alone is not enough (multi-GPU mixed utilization). Each entry: `uuid`, `model`, `utilization`, optional `mig_profile`. |
+| `cpu_pattern` | string | no | `variable` — CPU usage swings between ~5% and ~95% of request each interval (adaptive margin testing). |
+
+### Per-GPU device CSV (`ocp_ros_vm_gpu_device`)
+
+When a VM has `gpu_devices` or `gpu_count` &gt; 0, nise also emits **`ocp_ros_vm_gpu_device.csv`** (15-minute rows, one per device per interval).
+
+| Column | Description |
+|--------|-------------|
+| `interval_start` | Interval timestamp |
+| `namespace`, `vm_name` | VM identity |
+| `gpu_uuid`, `gpu_model` | Device identity |
+| `utilization_avg`, `utilization_max` | Utilization ratios (from `utilization` scenario per device) |
+| `fb_used_avg_mib`, `fb_used_max_mib` | Frame buffer used (MiB) |
+| `sm_active_avg`, `tensor_active_avg`, `dram_active_avg` | Activity ratios |
+| `mig_profile`, `max_slices` | MIG profile when set |
+
+VMs without GPUs produce **no** device CSV rows. With `gpu_devices`, only those devices are emitted; otherwise nise synthesizes one row per `gpu_count` using the VM-level `gpu_model` / `gpu_utilization`.
 
 ### GPU utilization scenarios
 
@@ -80,6 +98,34 @@ See [`examples/ocp_vm/vm_static_data.yml`](../examples/ocp_vm/vm_static_data.yml
 - Crash loop, Windows update spike, unstable downsize, unknown OS
 - Windows vs Linux fixed-usage pair (kernel reserve testing)
 - GPU idle, underutilized MIG, memory/compute saturated, well-utilized (`gpu_count`, `gpu_utilization`)
+- **Multi-GPU mixed** (`multi-gpu-mixed-vm`) — `gpu_devices` with one idle and one active GPU (notification **54**)
+- **Variable CPU** (`variable-cpu-vm`) — `cpu_pattern: variable` for adaptive margin tests
+
+```yaml
+        - vm_name: multi-gpu-mixed-vm
+          namespace: ml-training
+          guest_os: linux
+          guest_agent: true
+          vcpu: 16
+          memory_gib: 64
+          disk_gib: 500
+          gpu_count: 2
+          gpu_devices:
+            - uuid: "GPU-aaa-111"
+              model: "NVIDIA A100-SXM4-80GB"
+              utilization: high
+            - uuid: "GPU-bbb-222"
+              model: "NVIDIA A100-SXM4-80GB"
+              utilization: idle
+        - vm_name: variable-cpu-vm
+          namespace: batch-jobs
+          guest_os: linux
+          guest_agent: true
+          vcpu: 4
+          memory_gib: 8
+          disk_gib: 100
+          cpu_pattern: variable
+```
 
 IQE and cost-onprem E2E use `iqe_cost_management/data/openshift/ocp_report_ros_vm.yml`,
 `cost-onprem-chart/tests/data/nise_templates/ocp_report_vm_enhancements.yml`, and
