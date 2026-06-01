@@ -219,6 +219,17 @@ generators:
           gpu_count: 1
           gpu_model: "NVIDIA T4"
           gpu_utilization: medium
+        # High FB usage with moderate GPU util (time-slicing unsafe, notification 57)
+        - vm_name: gpu-fb-saturated-vm-01
+          namespace: inference
+          guest_os: linux
+          guest_agent: true
+          vcpu: 8
+          memory_gib: 32
+          disk_gib: 200
+          gpu_count: 1
+          gpu_model: "NVIDIA T4"
+          gpu_utilization: fb_saturated
         # Multi-GPU VM with mixed utilization (notification 54)
         - vm_name: multi-gpu-mixed-vm
           namespace: ml-training
