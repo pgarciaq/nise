@@ -546,6 +546,73 @@ class OCPVirtualMachineGeneratorTestCase(TestCase):
         )
         self.assertEqual(len(injected), 1)
 
+    def test_low_io_disk_metrics(self):
+        """low_io emits IOPS below ROS min classification threshold."""
+        attributes = {
+            "vms": [
+                {
+                    "vm_name": "cold-tier-vm",
+                    "namespace": "default",
+                    "node_name": "worker-1",
+                    "guest_os": "linux",
+                    "guest_agent": True,
+                    "vcpu": 2,
+                    "memory_gib": 4,
+                    "disk_gib": 50,
+                    "low_io": True,
+                }
+            ]
+        }
+        generator = OCPVirtualMachineGenerator(self.start, self.end, attributes)
+        rows = list(generator.generate_data(OCP_ROS_VM_USAGE))
+        self.assertEqual(int(rows[0]["disk_read_iops"]), 20)
+        self.assertEqual(int(rows[0]["disk_write_iops"]), 10)
+
+    def test_power_off_candidate_mostly_idle(self):
+        """power_off_candidate keeps most intervals below idle thresholds."""
+        attributes = {
+            "vms": [
+                {
+                    "vm_name": "power-off-vm",
+                    "namespace": "default",
+                    "node_name": "worker-1",
+                    "guest_os": "linux",
+                    "guest_agent": True,
+                    "vcpu": 4,
+                    "memory_gib": 8,
+                    "disk_gib": 100,
+                    "power_off_candidate": True,
+                }
+            ]
+        }
+        generator = OCPVirtualMachineGenerator(self.start, self.end, attributes)
+        rows = list(generator.generate_data(OCP_ROS_VM_USAGE))
+        cpu_values = [int(r["cpu_usage_mc"]) for r in rows]
+        self.assertLess(max(cpu_values), 4000)
+
+    def test_network_qos_sriov_metrics(self):
+        """network_qos_sriov raises throughput and drops when network_heavy is set."""
+        attributes = {
+            "vms": [
+                {
+                    "vm_name": "sriov-vm",
+                    "namespace": "default",
+                    "node_name": "worker-1",
+                    "guest_os": "linux",
+                    "guest_agent": True,
+                    "vcpu": 4,
+                    "memory_gib": 8,
+                    "disk_gib": 100,
+                    "network_heavy": True,
+                    "network_qos_sriov": True,
+                }
+            ]
+        }
+        generator = OCPVirtualMachineGenerator(self.start, self.end, attributes)
+        row = next(generator.generate_data(OCP_ROS_VM_USAGE))
+        self.assertEqual(int(row["net_rx_bytes_per_sec"]), 3_000_000_000)
+        self.assertEqual(int(row["net_rx_drops_per_sec"]), 12_000)
+
 
 class OCPVMReportIntegrationTestCase(TestCase):
     """Integration test writing ocp_ros_vm_usage.csv via ocp_create_report."""

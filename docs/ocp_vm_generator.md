@@ -59,6 +59,17 @@ generators:
 | `gpu_mig_profile` | string | no | MIG profile label (e.g. `3g.20gb`); sets `gpu_max_slices` when present. |
 | `gpu_devices` | list | no | Per-GPU configs when `gpu_count` alone is not enough (multi-GPU mixed utilization). Each entry: `uuid`, `model`, `utilization`, optional `mig_profile`. |
 | `cpu_pattern` | string | no | `variable` — CPU usage swings between ~5% and ~95% of request each interval (adaptive margin testing). |
+| `low_io` | bool | no | Minimal disk IOPS/BPS (storage tier **67** cold candidate). |
+| `power_off_candidate` | bool | no | Mostly idle days with periodic business-hour activity (notification **64**). Use ≥14 days of data. |
+| `network_qos_sriov` | bool | no | With `network_heavy`: multi-Gbps throughput and packet drops (notification **65**). |
+| `network_qos_dpdk` | bool | no | With `network_heavy`: very high PPS and small packets (notification **66**). |
+| `disk_growing_hypervisor` | bool | no | Growing hypervisor disk allocation without guest agent (notification **37**). |
+| `disk_filling_guest` | bool | no | Growing guest filesystem usage (notification **40**). |
+| `disk_critical` | bool | no | Guest filesystem ≥96% used (notification **42**). |
+| `oversized_for_instance_type` | bool | no | Low usage on large VM (notification **41** with catalog). |
+| `high_io` | bool | no | Fixed high IOPS (notification **39**). |
+| `sequential_io` / `random_io` | bool | no | I/O size patterns (notifications **58** / **59**; tiering **69** / **68**). |
+| `network_heavy` | bool | no | Sustained network throughput/PPS (notification **55**). |
 
 ### Per-GPU device CSV (`ocp_ros_vm_gpu_device`)
 
@@ -90,7 +101,8 @@ Use a smaller `gpu_model` (T4) with `saturated` to exercise frame-buffer saturat
 
 ## Example scenarios
 
-See [`examples/ocp_vm/vm_static_data.yml`](../examples/ocp_vm/vm_static_data.yml) for:
+See [`examples/ocp_vm_recommendations/vm_static_data.yml`](../examples/ocp_vm_recommendations/vm_static_data.yml) for a
+**full notification matrix (codes 18–19, 37–69)**. See [`examples/ocp_vm/vm_static_data.yml`](../examples/ocp_vm/vm_static_data.yml) for:
 
 - Active Linux/Windows with guest agent
 - Idle and abandoned VMs
