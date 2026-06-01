@@ -24,6 +24,8 @@
 #   high_io (bool)               - disk IOPS above ROS_VM_HIGH_IOPS_THRESHOLD (notification 39)
 #   sequential_io (bool)         - large block I/O, avg size >= 64 KiB (notification 58)
 #   random_io (bool)             - small random I/O, avg size < 16 KiB (notification 59)
+#   (placement)                  - pair VMs on same node + matching profile → notifications 60, 62
+#   (numa)                       - high memory_gib (e.g. 128) with ROS_VM_NUMA_NODE_MEMORY_GIB=64 → 63
 #   fixed_usage (dict)           - cpu_pct, mem_pct steady load (kernel-reserve tests)
 #   guest_os (str)               - linux, windows, or "" for unknown OS (notification 46)
 #
@@ -321,6 +323,41 @@ generators:
           fixed_usage:
             cpu_pct: 0.35
             mem_pct: 0.50
+        # HA pair on same node (notifications 60, 62) — matching vCPU/memory/disk profile
+        - vm_name: ha-primary-vm-01
+          namespace: ha-cluster
+          node_name: worker-1
+          guest_os: linux
+          guest_agent: true
+          vcpu: 4
+          memory_gib: 8
+          disk_gib: 100
+          fixed_usage:
+            cpu_pct: 0.40
+            mem_pct: 0.55
+        - vm_name: ha-standby-vm-01
+          namespace: ha-cluster
+          node_name: worker-1
+          guest_os: linux
+          guest_agent: true
+          vcpu: 4
+          memory_gib: 8
+          disk_gib: 100
+          fixed_usage:
+            cpu_pct: 0.38
+            mem_pct: 0.52
+        # Large memory guest for NUMA oversize (notification 63 when numa_node_memory_gib=64)
+        - vm_name: numa-oversized-vm-01
+          namespace: ha-cluster
+          node_name: worker-2
+          guest_os: linux
+          guest_agent: true
+          vcpu: 16
+          memory_gib: 128
+          disk_gib: 200
+          fixed_usage:
+            cpu_pct: 0.55
+            mem_pct: 0.70
         # Pair with cluster_instance_types.json vm_preferences for preference API fields
         - vm_name: preference-server-vm
           namespace: production
