@@ -188,6 +188,9 @@ class OCPVirtualMachineGenerator(AbstractGenerator):
         day_index = _day_offset(self.start_date, interval_start)
         total_days = max(1, (self.end_date.date() - self.start_date.date()).days)
 
+        if bool(vm.get("oversized_for_instance_type", False)):
+            return int(cpu_request_mc * 0.20), int(memory_request_kib * 0.35)
+
         if bool(vm.get("downsize_unstable", False)) and _is_business_hour(interval_start):
             if day_index >= total_days - 1:
                 return int(cpu_request_mc * 0.90), int(memory_request_kib * 0.80)
@@ -216,10 +219,23 @@ class OCPVirtualMachineGenerator(AbstractGenerator):
         cpu_limit_mc = vcpu * 1000
         memory_request_kib = _gib_to_kib(memory_gib)
         disk_allocated_bytes = int(disk_gib * GIGABYTE)
+        day_index = _day_offset(self.start_date, interval_start)
+        if bool(vm.get("disk_growing_hypervisor", False)):
+            disk_allocated_bytes = int((100 + day_index * 6) * GIGABYTE)
 
         cpu_usage_mc, memory_usage_kib = self._compute_cpu_mem_usage(vm, interval_start)
 
         cpu_usage_mc = max(0, min(cpu_usage_mc, cpu_limit_mc))
+
+        read_iops = 0 if abandoned else randint(100, 2000)
+        write_iops = 0 if abandoned else randint(50, 1000)
+        read_bps = 0 if abandoned else randint(1024, 512000)
+        write_bps = 0 if abandoned else randint(512, 256000)
+        if bool(vm.get("high_io", False)) and not abandoned:
+            read_iops = 6000
+            write_iops = 4000
+            read_bps = 2_000_000
+            write_bps = 1_000_000
 
         row = {
             "vm_name": vm.get("vm_name", ""),
@@ -232,10 +248,10 @@ class OCPVirtualMachineGenerator(AbstractGenerator):
             "memory_usage_kib": memory_usage_kib,
             "memory_request_kib": memory_request_kib,
             "disk_allocated_bytes": disk_allocated_bytes,
-            "disk_read_iops": 0 if abandoned else randint(100, 2000),
-            "disk_write_iops": 0 if abandoned else randint(50, 1000),
-            "disk_read_bytes_per_sec": 0 if abandoned else randint(1024, 512000),
-            "disk_write_bytes_per_sec": 0 if abandoned else randint(512, 256000),
+            "disk_read_iops": read_iops,
+            "disk_write_iops": write_iops,
+            "disk_read_bytes_per_sec": read_bps,
+            "disk_write_bytes_per_sec": write_bps,
             "restart_count": 0,
         }
 
@@ -248,13 +264,20 @@ class OCPVirtualMachineGenerator(AbstractGenerator):
             row["filesystem_capacity_bytes"] = disk_allocated_bytes
             vm_key = vm.get("vm_name", "")
             if vm_key not in self._filesystem_used_bytes:
-                self._filesystem_used_bytes[vm_key] = int(uniform(5, 20) * GIGABYTE)
-            day_index = _day_offset(self.start_date, interval_start)
-            daily_growth = uniform(0.1, 0.5) * GIGABYTE
-            row["filesystem_used_bytes"] = min(
-                disk_allocated_bytes,
-                int(self._filesystem_used_bytes[vm_key] + day_index * daily_growth),
-            )
+                base_used = (
+                    8 * GIGABYTE if bool(vm.get("disk_filling_guest", False)) else int(uniform(5, 20) * GIGABYTE)
+                )
+                self._filesystem_used_bytes[vm_key] = base_used
+            if bool(vm.get("disk_critical", False)):
+                row["filesystem_used_bytes"] = int(disk_allocated_bytes * 0.96)
+            else:
+                daily_growth = (
+                    6 * GIGABYTE if bool(vm.get("disk_filling_guest", False)) else uniform(0.1, 0.5) * GIGABYTE
+                )
+                row["filesystem_used_bytes"] = min(
+                    disk_allocated_bytes,
+                    int(self._filesystem_used_bytes[vm_key] + day_index * daily_growth),
+                )
         else:
             row["memory_available_kib"] = ""
             row["filesystem_used_bytes"] = ""
