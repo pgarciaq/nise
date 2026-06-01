@@ -1,0 +1,534 @@
+---
+# Comprehensive OpenShift Virtualization ROS fixture for ros-ocp-backend VM notifications.
+#
+# Official code reference: ros-ocp-backend docs/architecture/notification-codes.md
+# (codes 18–19, 37–69). The user-facing summary in the task may differ from DB codes.
+#
+# Generate (requires --ros-ocp-info for ocp_ros_vm_usage.csv in combined OCP reports):
+#
+#   nise report ocp \
+#     --static-report-file examples/ocp_vm_recommendations/vm_static_data.yml \
+#     --ocp-cluster-id <CLUSTER-UUID> \
+#     --ros-ocp-info \
+#     -s 2026-04-01 -e 2026-05-05 -w
+#
+# VM-only (no pod/cost CSVs): omit --ros-ocp-info; only OCPVirtualMachineGenerator runs.
+#
+# ROS prerequisites (not set in this YAML):
+#   - Instance-type catalog: cluster_instance_types.json upload (codes 41, n1/55).
+#   - NUMA 63: set placement.numa_node_memory_gib (e.g. 64) when guest memory_gib > cap.
+#   - Savings on 64: Koku cost rates + ROS_SAVINGS_ESTIMATES_ENABLED.
+#   - Code 45 (insufficient data): ingest < 24h or use a short date range fixture.
+#   - Code 62 (shared PVC): profile peers work today; true PVC name needs operator CSV column.
+#   - Node allocatable memory (512 GiB host) is not emitted by nise; use ROS settings/digests.
+#
+# Date span: 35 days (power-off 64, storage tiering 67–69, multi-day thresholds).
+#
+generators:
+  - OCPVirtualMachineGenerator:
+      start_date: 2026-04-01
+      end_date: 2026-05-05
+      vms:
+        # --- Required scenario matrix (rightsizing / placement / control) ---
+
+        # 18 VM_IDLE — very low CPU and memory (not abandoned).
+        - vm_name: idle-vm-linux-01
+          namespace: vm-recs
+          node_name: worker-3
+          guest_os: linux
+          guest_agent: true
+          vcpu: 4
+          memory_gib: 8
+          disk_gib: 40
+          idle: true
+
+        # 19 VM_OVERSIZED — 16 vCPU / 64 GiB with sustained low usage.
+        - vm_name: oversized-vm-01
+          namespace: vm-recs
+          node_name: worker-2
+          guest_os: linux
+          guest_agent: true
+          vcpu: 16
+          memory_gib: 64
+          disk_gib: 200
+          oversized_for_instance_type: true
+
+        # Undersized (recommendation upsize; no dedicated notification code).
+        - vm_name: undersized-vm-01
+          namespace: vm-recs
+          node_name: worker-2
+          guest_os: linux
+          guest_agent: true
+          vcpu: 2
+          memory_gib: 4
+          disk_gib: 50
+          fixed_usage:
+            cpu_pct: 0.92
+            mem_pct: 0.88
+
+        # Healthy control (~50–70% CPU, ~60% memory).
+        - vm_name: healthy-control-vm-01
+          namespace: vm-recs
+          node_name: worker-3
+          guest_os: linux
+          guest_agent: true
+          vcpu: 4
+          memory_gib: 8
+          disk_gib: 100
+          fixed_usage:
+            cpu_pct: 0.62
+            mem_pct: 0.60
+
+        # 60 VM_REDUNDANT_COLOCATION — same-node HA pair (prefix web-server-*).
+        - vm_name: web-server-01
+          namespace: vm-recs
+          node_name: worker-1
+          guest_os: linux
+          guest_agent: true
+          vcpu: 4
+          memory_gib: 8
+          disk_gib: 100
+          fixed_usage:
+            cpu_pct: 0.40
+            mem_pct: 0.55
+        - vm_name: web-server-02
+          namespace: vm-recs
+          node_name: worker-1
+          guest_os: linux
+          guest_agent: true
+          vcpu: 4
+          memory_gib: 8
+          disk_gib: 100
+          fixed_usage:
+            cpu_pct: 0.38
+            mem_pct: 0.52
+
+        # 61 VM_UNEVEN_NODE_DISTRIBUTION — third peer on worker-1, one on worker-2 (3:1 skew).
+        - vm_name: web-server-03
+          namespace: vm-recs
+          node_name: worker-2
+          guest_os: linux
+          guest_agent: true
+          vcpu: 4
+          memory_gib: 8
+          disk_gib: 100
+          fixed_usage:
+            cpu_pct: 0.42
+            mem_pct: 0.54
+        - vm_name: web-server-04
+          namespace: vm-recs
+          node_name: worker-1
+          guest_os: linux
+          guest_agent: true
+          vcpu: 4
+          memory_gib: 8
+          disk_gib: 100
+          fixed_usage:
+            cpu_pct: 0.39
+            mem_pct: 0.53
+
+        # 63 VM_NUMA_OVERSIZED — 320 GiB guest (exceeds typical 256 GiB NUMA cap).
+        - vm_name: numa-oversized-vm-01
+          namespace: vm-recs
+          node_name: worker-numa-512
+          guest_os: linux
+          guest_agent: true
+          vcpu: 32
+          memory_gib: 320
+          disk_gib: 500
+          fixed_usage:
+            cpu_pct: 0.50
+            mem_pct: 0.65
+
+        # 50–53 GPU passthrough / MIG scenarios.
+        - vm_name: gpu-passthrough-vm-01
+          namespace: vm-recs
+          node_name: worker-gpu-1
+          guest_os: linux
+          guest_agent: true
+          vcpu: 16
+          memory_gib: 64
+          disk_gib: 500
+          gpu_count: 1
+          gpu_model: "NVIDIA A100-SXM4-80GB"
+          gpu_utilization: medium
+        - vm_name: gpu-idle-vm-01
+          namespace: vm-recs
+          node_name: worker-gpu-1
+          guest_os: linux
+          guest_agent: true
+          vcpu: 8
+          memory_gib: 32
+          disk_gib: 200
+          gpu_count: 1
+          gpu_model: "NVIDIA A100-SXM4-80GB"
+          gpu_utilization: idle
+        - vm_name: gpu-underutil-mig-vm-01
+          namespace: vm-recs
+          node_name: worker-gpu-2
+          guest_os: linux
+          guest_agent: true
+          vcpu: 8
+          memory_gib: 32
+          disk_gib: 200
+          gpu_count: 1
+          gpu_model: "NVIDIA A100-SXM4-40GB"
+          gpu_mig_profile: "3g.20gb"
+          gpu_utilization: low
+        - vm_name: gpu-memory-saturated-vm-01
+          namespace: vm-recs
+          node_name: worker-gpu-2
+          guest_os: linux
+          guest_agent: true
+          vcpu: 8
+          memory_gib: 32
+          disk_gib: 200
+          gpu_count: 1
+          gpu_model: "NVIDIA T4"
+          gpu_utilization: saturated
+        - vm_name: gpu-compute-saturated-vm-01
+          namespace: vm-recs
+          node_name: worker-gpu-1
+          guest_os: linux
+          guest_agent: true
+          vcpu: 32
+          memory_gib: 128
+          disk_gib: 1000
+          gpu_count: 1
+          gpu_model: "NVIDIA A100-SXM4-80GB"
+          gpu_utilization: saturated
+        - vm_name: multi-gpu-mixed-vm-01
+          namespace: vm-recs
+          node_name: worker-gpu-1
+          guest_os: linux
+          guest_agent: true
+          vcpu: 16
+          memory_gib: 64
+          disk_gib: 500
+          gpu_count: 2
+          gpu_devices:
+            - uuid: "GPU-mixed-active"
+              model: "NVIDIA A100-SXM4-80GB"
+              utilization: high
+            - uuid: "GPU-mixed-idle"
+              model: "NVIDIA A100-SXM4-80GB"
+              utilization: idle
+
+        # 56 vGPU profile + 57 time-slice unsafe FB.
+        - vm_name: gpu-timeslice-profile-vm-01
+          namespace: vm-recs
+          node_name: worker-gpu-2
+          guest_os: linux
+          guest_agent: true
+          vcpu: 8
+          memory_gib: 32
+          disk_gib: 200
+          gpu_count: 1
+          gpu_model: "NVIDIA T4"
+          gpu_utilization: low
+        - vm_name: gpu-fb-saturated-vm-01
+          namespace: vm-recs
+          node_name: worker-gpu-2
+          guest_os: linux
+          guest_agent: true
+          vcpu: 8
+          memory_gib: 32
+          disk_gib: 200
+          gpu_count: 1
+          gpu_model: "NVIDIA T4"
+          gpu_utilization: fb_saturated
+
+        # 64 VM_POWER_OFF_SCHEDULE — mostly idle days, periodic business-hour activity.
+        - vm_name: power-off-candidate-vm-01
+          namespace: vm-recs
+          node_name: worker-3
+          guest_os: linux
+          guest_agent: true
+          vcpu: 4
+          memory_gib: 8
+          disk_gib: 100
+          power_off_candidate: true
+
+        # --- Notification codes 37–49 (core VM notifications) ---
+
+        # 37 VM_DISK_GROWING_NO_CAPACITY (no guest agent).
+        - vm_name: disk-grow-hypervisor-01
+          namespace: vm-notifications
+          node_name: worker-1
+          guest_os: linux
+          guest_agent: false
+          vcpu: 4
+          memory_gib: 8
+          disk_gib: 100
+          disk_growing_hypervisor: true
+
+        # 38 VM_NO_GUEST_AGENT.
+        - vm_name: no-guest-agent-01
+          namespace: vm-notifications
+          node_name: worker-1
+          guest_os: linux
+          guest_agent: false
+          vcpu: 4
+          memory_gib: 8
+          disk_gib: 50
+
+        # 39 VM_HIGH_IO.
+        - vm_name: high-io-vm-01
+          namespace: vm-notifications
+          node_name: worker-2
+          guest_os: linux
+          guest_agent: true
+          vcpu: 4
+          memory_gib: 8
+          disk_gib: 100
+          high_io: true
+
+        # 40 VM_DISK_FILLING_GUEST.
+        - vm_name: disk-filling-guest-01
+          namespace: vm-notifications
+          node_name: worker-1
+          guest_os: linux
+          guest_agent: true
+          vcpu: 4
+          memory_gib: 8
+          disk_gib: 200
+          disk_filling_guest: true
+
+        # 41 VM_INSTANCE_TYPE_REC.
+        - vm_name: instance-type-rec-01
+          namespace: vm-notifications
+          node_name: worker-2
+          guest_os: linux
+          guest_agent: true
+          vcpu: 8
+          memory_gib: 16
+          disk_gib: 100
+          oversized_for_instance_type: true
+
+        # 42 VM_DISK_CRITICAL.
+        - vm_name: disk-critical-01
+          namespace: vm-notifications
+          node_name: worker-1
+          guest_os: linux
+          guest_agent: true
+          vcpu: 4
+          memory_gib: 8
+          disk_gib: 100
+          disk_critical: true
+
+        # 43 VM_ABANDONED.
+        - vm_name: abandoned-vm-01
+          namespace: vm-notifications
+          node_name: worker-1
+          guest_os: linux
+          guest_agent: true
+          vcpu: 4
+          memory_gib: 8
+          disk_gib: 50
+          abandoned: true
+
+        # 44 VM_GUEST_AGENT_INTERRUPTED (agent removed after day 5).
+        - vm_name: agent-interrupted-vm-01
+          namespace: vm-notifications
+          node_name: worker-2
+          guest_os: linux
+          guest_agent: false
+          agent_remove_day: 5
+          vcpu: 4
+          memory_gib: 8
+          disk_gib: 100
+
+        # 46 VM_UNKNOWN_OS.
+        - vm_name: unknown-os-vm-01
+          namespace: vm-notifications
+          node_name: worker-3
+          guest_os: ""
+          guest_agent: false
+          vcpu: 2
+          memory_gib: 4
+          disk_gib: 50
+
+        # 47 VM_WINDOWS_UPDATE_SPIKE.
+        - vm_name: windows-update-spike-vm-01
+          namespace: vm-notifications
+          node_name: worker-2
+          guest_os: windows
+          guest_agent: true
+          vcpu: 4
+          memory_gib: 16
+          disk_gib: 200
+          windows_update_spike: true
+
+        # 48 VM_CRASH_LOOP.
+        - vm_name: crash-loop-vm-01
+          namespace: vm-notifications
+          node_name: worker-2
+          guest_os: linux
+          guest_agent: true
+          vcpu: 4
+          memory_gib: 8
+          disk_gib: 100
+          crash_loop: true
+
+        # 49 VM_DOWNSIZE_HELD.
+        - vm_name: downsize-unstable-vm-01
+          namespace: vm-notifications
+          node_name: worker-1
+          guest_os: linux
+          guest_agent: true
+          vcpu: 8
+          memory_gib: 16
+          disk_gib: 100
+          downsize_unstable: true
+
+        # --- Network 55–56 and QoS 65–66 ---
+
+        # 55 VM_NETWORK_SATURATED (n1 series).
+        - vm_name: network-heavy-vm-01
+          namespace: vm-notifications
+          node_name: worker-2
+          guest_os: linux
+          guest_agent: true
+          vcpu: 4
+          memory_gib: 16
+          disk_gib: 100
+          network_heavy: true
+          fixed_usage:
+            cpu_pct: 0.35
+            mem_pct: 0.50
+
+        # 65 VM_NETWORK_QOS_SRIOV.
+        - vm_name: network-qos-sriov-vm-01
+          namespace: vm-notifications
+          node_name: worker-2
+          guest_os: linux
+          guest_agent: true
+          vcpu: 8
+          memory_gib: 16
+          disk_gib: 100
+          network_heavy: true
+          network_qos_sriov: true
+          fixed_usage:
+            cpu_pct: 0.40
+            mem_pct: 0.55
+
+        # 66 VM_NETWORK_QOS_DPDK.
+        - vm_name: network-qos-dpdk-vm-01
+          namespace: vm-notifications
+          node_name: worker-2
+          guest_os: linux
+          guest_agent: true
+          vcpu: 8
+          memory_gib: 16
+          disk_gib: 100
+          network_heavy: true
+          network_qos_dpdk: true
+          fixed_usage:
+            cpu_pct: 0.40
+            mem_pct: 0.55
+
+        # --- Disk I/O patterns 58–59 and storage tiering 67–69 ---
+
+        # 58 VM_IO_SEQUENTIAL / 69 VM_STORAGE_TIER_THROUGHPUT.
+        - vm_name: sequential-io-vm-01
+          namespace: vm-notifications
+          node_name: worker-2
+          guest_os: linux
+          guest_agent: true
+          vcpu: 4
+          memory_gib: 8
+          disk_gib: 100
+          sequential_io: true
+
+        # 59 VM_IO_RANDOM / 68 VM_STORAGE_TIER_IOPS.
+        - vm_name: random-io-vm-01
+          namespace: vm-notifications
+          node_name: worker-2
+          guest_os: linux
+          guest_agent: true
+          vcpu: 4
+          memory_gib: 8
+          disk_gib: 100
+          random_io: true
+
+        # 67 VM_STORAGE_TIER_COLD (minimal daily I/O).
+        - vm_name: storage-tier-cold-vm-01
+          namespace: vm-notifications
+          node_name: worker-3
+          guest_os: linux
+          guest_agent: true
+          vcpu: 2
+          memory_gib: 4
+          disk_gib: 50
+          low_io: true
+          fixed_usage:
+            cpu_pct: 0.15
+            mem_pct: 0.30
+
+        # --- 62 VM_SHARED_STORAGE (correlated profile peers in ha-cluster namespace) ---
+
+        - vm_name: ha-primary-vm-01
+          namespace: ha-cluster
+          node_name: worker-1
+          guest_os: linux
+          guest_agent: true
+          vcpu: 4
+          memory_gib: 8
+          disk_gib: 100
+          fixed_usage:
+            cpu_pct: 0.40
+            mem_pct: 0.55
+        - vm_name: ha-standby-vm-01
+          namespace: ha-cluster
+          node_name: worker-1
+          guest_os: linux
+          guest_agent: true
+          vcpu: 4
+          memory_gib: 8
+          disk_gib: 100
+          fixed_usage:
+            cpu_pct: 0.38
+            mem_pct: 0.52
+
+        # --- Supplemental (guest agent lifecycle, Windows kernel reserve pair) ---
+
+        - vm_name: late-agent-install-vm-01
+          namespace: vm-notifications
+          node_name: worker-1
+          guest_os: linux
+          guest_agent: true
+          agent_install_hour: 2
+          vcpu: 4
+          memory_gib: 8
+          disk_gib: 100
+        - vm_name: windows-kernel-reserve-vm-01
+          namespace: vm-notifications
+          node_name: worker-2
+          guest_os: windows
+          guest_agent: true
+          vcpu: 4
+          memory_gib: 8
+          disk_gib: 100
+          fixed_usage:
+            cpu_pct: 0.70
+            mem_pct: 0.85
+        - vm_name: linux-kernel-reserve-vm-01
+          namespace: vm-notifications
+          node_name: worker-1
+          guest_os: linux
+          guest_agent: true
+          vcpu: 4
+          memory_gib: 8
+          disk_gib: 100
+          fixed_usage:
+            cpu_pct: 0.70
+            mem_pct: 0.85
+        - vm_name: variable-cpu-vm-01
+          namespace: vm-notifications
+          node_name: worker-3
+          guest_os: linux
+          guest_agent: true
+          vcpu: 4
+          memory_gib: 8
+          disk_gib: 100
+          cpu_pattern: variable

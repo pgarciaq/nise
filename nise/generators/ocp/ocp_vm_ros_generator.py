@@ -191,6 +191,14 @@ class OCPVirtualMachineGenerator(AbstractGenerator):
         if bool(vm.get("oversized_for_instance_type", False)):
             return int(cpu_request_mc * 0.20), int(memory_request_kib * 0.35)
 
+        if bool(vm.get("power_off_candidate", False)):
+            # Mostly idle days with occasional business-hour activity (notification 64).
+            day_index = _day_offset(self.start_date, interval_start)
+            if day_index % 4 == 0 and _is_business_hour(interval_start):
+                return int(cpu_request_mc * uniform(0.35, 0.55)), int(memory_request_kib * uniform(0.45, 0.65))
+            idle_cap = IDLE_WINDOWS_MEMORY_KIB if guest_os == "windows" else IDLE_LINUX_MEMORY_KIB
+            return randint(5, 40), randint(max(1, idle_cap // 4), idle_cap)
+
         if bool(vm.get("downsize_unstable", False)) and _is_business_hour(interval_start):
             if day_index >= total_days - 1:
                 return int(cpu_request_mc * 0.90), int(memory_request_kib * 0.80)
@@ -229,9 +237,14 @@ class OCPVirtualMachineGenerator(AbstractGenerator):
             write_iops = 1500
             read_bps = read_iops * 4096
             write_bps = write_iops * 4096
+        elif bool(vm.get("low_io", False)):
+            read_iops = 20
+            write_iops = 10
+            read_bps = 8192
+            write_bps = 4096
         return read_iops, write_iops, read_bps, write_bps
 
-    def _build_vm_metrics(self, vm, interval_start):
+    def _build_vm_metrics(self, vm, interval_start):  # noqa: C901
         """Compute metric values for one VM at one interval."""
         vcpu = int(vm.get("vcpu", 2))
         memory_gib = float(vm.get("memory_gib", 4))
@@ -263,6 +276,18 @@ class OCPVirtualMachineGenerator(AbstractGenerator):
             net_tx_pps = 55_000
             net_rx_drops = 80
             net_tx_drops = 40
+            if bool(vm.get("network_qos_sriov", False)):
+                # Sustained multi-Gbps + drops (notifications 65).
+                net_rx_bps = 3_000_000_000
+                net_tx_bps = 3_000_000_000
+                net_rx_drops = 12_000
+                net_tx_drops = 8_000
+            if bool(vm.get("network_qos_dpdk", False)):
+                # High PPS, small average packet size (notification 66).
+                net_rx_pps = 600_000
+                net_tx_pps = 600_000
+                net_rx_bps = net_rx_pps * 128
+                net_tx_bps = net_tx_pps * 128
 
         row = {
             "vm_name": vm.get("vm_name", ""),
