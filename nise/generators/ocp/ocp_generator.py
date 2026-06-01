@@ -177,6 +177,12 @@ OCP_ROS_VM_COLUMNS = (
     "gpu_dram_active_avg",
     "gpu_mig_profile",
     "gpu_max_slices",
+    "net_rx_bytes_per_sec",
+    "net_tx_bytes_per_sec",
+    "net_rx_packets_per_sec",
+    "net_tx_packets_per_sec",
+    "net_rx_drops_per_sec",
+    "net_tx_drops_per_sec",
 )
 OCP_ROS_VM_GPU_DEVICE_COLUMNS = (
     "interval_start",

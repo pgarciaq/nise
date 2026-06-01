@@ -238,6 +238,16 @@ class OCPVirtualMachineGenerator(AbstractGenerator):
             read_bps = 2_000_000
             write_bps = 1_000_000
 
+        net_rx_bps = net_tx_bps = net_rx_pps = net_tx_pps = net_rx_drops = net_tx_drops = 0.0
+        if bool(vm.get("network_heavy", False)) and not abandoned:
+            # ~500 Mbps aggregate with moderate CPU/memory (n1 classification tests).
+            net_rx_bps = 31_250_000
+            net_tx_bps = 31_250_000
+            net_rx_pps = 55_000
+            net_tx_pps = 55_000
+            net_rx_drops = 80
+            net_tx_drops = 40
+
         row = {
             "vm_name": vm.get("vm_name", ""),
             "namespace": vm.get("namespace", ""),
@@ -287,6 +297,14 @@ class OCPVirtualMachineGenerator(AbstractGenerator):
         gpu_count = int(vm.get("gpu_count", 0) or 0)
         if gpu_count > 0:
             row.update(self._gpu_metrics(vm))
+
+        if net_rx_bps > 0 or net_tx_bps > 0:
+            row["net_rx_bytes_per_sec"] = net_rx_bps
+            row["net_tx_bytes_per_sec"] = net_tx_bps
+            row["net_rx_packets_per_sec"] = net_rx_pps
+            row["net_tx_packets_per_sec"] = net_tx_pps
+            row["net_rx_drops_per_sec"] = net_rx_drops
+            row["net_tx_drops_per_sec"] = net_tx_drops
 
         return row
 
