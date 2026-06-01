@@ -20,8 +20,14 @@
 #   crash_loop (bool)            - high restart_count (notification 48)
 #   windows_update_spike (bool)   - Windows P99>>P95 spread (notification 47)
 #   downsize_unstable (bool)     - performance downsize held (notification 49)
+#   oversized_for_instance_type (bool) - low usage on large VM; notification 41 with catalog
+#   high_io (bool)               - disk IOPS above ROS_VM_HIGH_IOPS_THRESHOLD (notification 39)
 #   fixed_usage (dict)           - cpu_pct, mem_pct steady load (kernel-reserve tests)
 #   guest_os (str)               - linux, windows, or "" for unknown OS (notification 46)
+#
+# VirtualMachinePreference metadata is supplied via cluster_instance_types.json
+# (preferences + vm_preferences), not VM YAML fields. Pair preference-server-vm with
+# an operator upload mapping production/preference-server-vm -> server preference.
 #
 generators:
   - OCPVirtualMachineGenerator:
@@ -249,3 +255,35 @@ generators:
           fixed_usage:
             cpu_pct: 0.35
             mem_pct: 0.55
+        # Oversized VM for instance-type recommendation (notification 41)
+        - vm_name: instance-type-rec-01
+          namespace: vm-notifications
+          node_name: worker-2
+          guest_os: linux
+          guest_agent: true
+          vcpu: 8
+          memory_gib: 16
+          disk_gib: 100
+          oversized_for_instance_type: true
+        # High disk I/O (notification 39)
+        - vm_name: high-io-vm-01
+          namespace: vm-notifications
+          node_name: worker-2
+          guest_os: linux
+          guest_agent: true
+          vcpu: 4
+          memory_gib: 8
+          disk_gib: 100
+          high_io: true
+        # Pair with cluster_instance_types.json vm_preferences for preference API fields
+        - vm_name: preference-server-vm
+          namespace: production
+          node_name: worker-1
+          guest_os: linux
+          guest_agent: true
+          vcpu: 4
+          memory_gib: 8
+          disk_gib: 100
+          fixed_usage:
+            cpu_pct: 0.45
+            mem_pct: 0.60

@@ -232,8 +232,9 @@ class OCPVirtualMachineGenerator(AbstractGenerator):
         read_bps = 0 if abandoned else randint(1024, 512000)
         write_bps = 0 if abandoned else randint(512, 256000)
         if bool(vm.get("high_io", False)) and not abandoned:
+            # Default ROS_VM_HIGH_IOPS_THRESHOLD is 3000; use 2x per direction for notification 39.
             read_iops = 6000
-            write_iops = 4000
+            write_iops = 6000
             read_bps = 2_000_000
             write_bps = 1_000_000
 
