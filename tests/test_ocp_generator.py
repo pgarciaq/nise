@@ -1083,8 +1083,15 @@ class OCPGeneratorTestCase(TestCase):
             "memory_request_used",
             "memory_limit_hard",
             "memory_limit_used",
+            "storage_request_hard",
+            "storage_request_used",
+            "pods_hard",
+            "pods_used",
+            "object_count_hard",
+            "object_count_used",
+            "namespaces",
         )
-        self.assertEqual(len(OCP_ROS_CLUSTER_QUOTA_COLUMN), 13)
+        self.assertEqual(len(OCP_ROS_CLUSTER_QUOTA_COLUMN), 20)
         self.assertEqual(OCP_ROS_CLUSTER_QUOTA_COLUMN, expected_columns)
 
     def test_cluster_quota_hard_and_used_values(self):
@@ -1107,6 +1114,9 @@ class OCPGeneratorTestCase(TestCase):
         self.assertEqual(values["memory_request_used"], 30 * 1024 * 1024 * 1024)
         self.assertLessEqual(values["cpu_limit_used"], values["cpu_limit_hard"])
         self.assertLessEqual(values["memory_limit_used"], values["memory_limit_hard"])
+        self.assertEqual(values["pods_hard"], 50)
+        self.assertEqual(values["pods_used"], 20)
+        self.assertEqual(values["namespaces"], "namespace-1,namespace-2")
 
     def test_gen_ros_cluster_quota_rows_default_quotas(self):
         """Test default ClusterResourceQuota row generation."""
@@ -1122,6 +1132,9 @@ class OCPGeneratorTestCase(TestCase):
             self.assertLessEqual(row["cpu_request_used"], row["cpu_request_hard"])
             self.assertGreaterEqual(row["memory_request_used"], row["memory_request_hard"] * 0.3)
             self.assertLessEqual(row["memory_request_used"], row["memory_request_hard"])
+            self.assertIn("storage_request_hard", row)
+            self.assertIn("namespaces", row)
+            self.assertEqual(row["pods_hard"], 50)
 
     def test_gen_ros_cluster_quota_rows_from_static_yaml(self):
         """Test ClusterResourceQuota rows from static YAML attributes."""

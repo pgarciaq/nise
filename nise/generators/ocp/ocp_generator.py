@@ -304,7 +304,22 @@ OCP_ROS_CLUSTER_QUOTA_COLUMN = (
     "memory_request_used",
     "memory_limit_hard",
     "memory_limit_used",
+    "storage_request_hard",
+    "storage_request_used",
+    "pods_hard",
+    "pods_used",
+    "object_count_hard",
+    "object_count_used",
+    "namespaces",
 )
+# Operator-aligned defaults when YAML does not override CRQ storage/pods/object_count.
+_DEFAULT_CRQ_STORAGE_HARD_BYTES = 100 * GIGABYTE
+_DEFAULT_CRQ_STORAGE_USED_BYTES = 40 * GIGABYTE
+_DEFAULT_CRQ_PODS_HARD = 50
+_DEFAULT_CRQ_PODS_USED = 20
+_DEFAULT_CRQ_OBJECT_COUNT_HARD = 100
+_DEFAULT_CRQ_OBJECT_COUNT_USED = 45
+_DEFAULT_CRQ_NAMESPACES = "namespace-1,namespace-2"
 OCP_GPU_USAGE_COLUMNS = (
     "report_period_start",
     "report_period_end",
@@ -766,6 +781,20 @@ def cluster_quota_hard_and_used_values(quota_config, constant_values_ros_ocp=Fal
     memory_request_used = min(memory_request_used, memory_request_hard)
     memory_limit_used = min(memory_limit_used, memory_limit_hard)
 
+    storage_request_hard = float(quota_config.get("storage_request_hard", _DEFAULT_CRQ_STORAGE_HARD_BYTES))
+    storage_request_used = float(quota_config.get("storage_request_used", _DEFAULT_CRQ_STORAGE_USED_BYTES))
+    pods_hard = int(quota_config.get("pods_hard", _DEFAULT_CRQ_PODS_HARD))
+    pods_used = int(quota_config.get("pods_used", _DEFAULT_CRQ_PODS_USED))
+    object_count_hard = int(quota_config.get("object_count_hard", _DEFAULT_CRQ_OBJECT_COUNT_HARD))
+    object_count_used = int(quota_config.get("object_count_used", _DEFAULT_CRQ_OBJECT_COUNT_USED))
+    namespaces = quota_config.get("namespaces", _DEFAULT_CRQ_NAMESPACES)
+    if isinstance(namespaces, list):
+        namespaces = ",".join(str(n).strip() for n in namespaces if str(n).strip())
+
+    storage_request_used = min(storage_request_used, storage_request_hard)
+    pods_used = min(pods_used, pods_hard)
+    object_count_used = min(object_count_used, object_count_hard)
+
     return {
         "cluster_quota_name": quota_config["name"],
         "cpu_request_hard": round(cpu_request_hard, 5),
@@ -776,6 +805,13 @@ def cluster_quota_hard_and_used_values(quota_config, constant_values_ros_ocp=Fal
         "memory_request_used": memory_request_used,
         "memory_limit_hard": round(memory_limit_hard, 5),
         "memory_limit_used": memory_limit_used,
+        "storage_request_hard": round(storage_request_hard, 5),
+        "storage_request_used": round(storage_request_used, 5),
+        "pods_hard": pods_hard,
+        "pods_used": pods_used,
+        "object_count_hard": object_count_hard,
+        "object_count_used": object_count_used,
+        "namespaces": namespaces,
     }
 
 
