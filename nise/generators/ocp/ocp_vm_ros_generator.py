@@ -23,6 +23,8 @@ from random import uniform
 from nise.generators.generator import AbstractGenerator
 from nise.generators.generator import REPORT_TYPE
 from nise.generators.ocp.ocp_generator import OCP_ROS_VM_COLUMNS
+from nise.generators.ocp.ocp_generator import OCP_ROS_VM_GPU_DEVICE
+from nise.generators.ocp.ocp_generator import OCP_ROS_VM_GPU_DEVICE_COLUMNS
 from nise.generators.ocp.ocp_generator import OCP_ROS_VM_USAGE
 from nise.generators.ocp.ocp_generator import OCPGenerator
 
@@ -110,6 +112,10 @@ class OCPVirtualMachineGenerator(AbstractGenerator):
                 "_generate_hourly_data": self._gen_quarter_hourly_vm_usage,
                 "_update_data": self._update_vm_ros_data,
             },
+            OCP_ROS_VM_GPU_DEVICE: {
+                "_generate_hourly_data": self._gen_quarter_hourly_vm_gpu_device,
+                "_update_data": self._update_vm_gpu_device_data,
+            },
         }
 
     def _load_vms(self):
@@ -168,6 +174,10 @@ class OCPVirtualMachineGenerator(AbstractGenerator):
         if bool(vm.get("idle", False)):
             idle_cap = IDLE_WINDOWS_MEMORY_KIB if guest_os == "windows" else IDLE_LINUX_MEMORY_KIB
             return randint(5, 45), randint(max(1, idle_cap // 4), idle_cap)
+
+        if vm.get("cpu_pattern") == "variable":
+            swing = uniform(0.05, 0.95)
+            return int(cpu_request_mc * swing), int(memory_request_kib * uniform(0.40, 0.85))
 
         fixed_usage = vm.get("fixed_usage")
         if fixed_usage and isinstance(fixed_usage, dict):
@@ -300,6 +310,57 @@ class OCPVirtualMachineGenerator(AbstractGenerator):
             elapsed_hours = (interval_start - self.start_date).total_seconds() / 3600.0
             return elapsed_hours >= float(install_hour)
         return True
+
+    def _init_gpu_device_row(self, start, end, **kwargs):
+        del start, end, kwargs
+        return {column: "" for column in OCP_ROS_VM_GPU_DEVICE_COLUMNS}
+
+    def _update_vm_gpu_device_data(self, row, start, end, **kwargs):
+        del end
+        vm = kwargs.get("vm")
+        device = kwargs.get("gpu_device")
+        row["interval_start"] = OCPGenerator.timestamp(start)
+        row["namespace"] = vm.get("namespace", "")
+        row["vm_name"] = vm.get("vm_name", "")
+        row["gpu_uuid"] = device.get("uuid", "")
+        row["gpu_model"] = device.get("model", vm.get("gpu_model", ""))
+        scenario = device.get("utilization", vm.get("gpu_utilization", "medium"))
+        util_avg, util_max, sm_avg, tensor_avg, dram_avg, fb_max = self._gpu_utilization_values(scenario)
+        row["utilization_avg"] = util_avg
+        row["utilization_max"] = util_max
+        row["fb_used_avg_mib"] = fb_max * 0.6
+        row["fb_used_max_mib"] = fb_max
+        row["sm_active_avg"] = sm_avg
+        row["tensor_active_avg"] = tensor_avg
+        row["dram_active_avg"] = dram_avg
+        row["mig_profile"] = device.get("mig_profile", vm.get("gpu_mig_profile", ""))
+        row["max_slices"] = 7 if row["mig_profile"] else 0
+        return row
+
+    def _gen_quarter_hourly_vm_gpu_device(self, **kwargs):
+        """Emit one row per GPU device per 15-minute interval."""
+        for quarter_hour in self.quarter_hours:
+            start = quarter_hour.get("start")
+            end = quarter_hour.get("end")
+            for vm in self._vms:
+                devices = vm.get("gpu_devices")
+                if devices:
+                    for device in devices:
+                        row = self._init_gpu_device_row(start, end, **kwargs)
+                        yield self._update_vm_gpu_device_data(row, start, end, vm=vm, gpu_device=device, **kwargs)
+                    continue
+                gpu_count = int(vm.get("gpu_count", 0) or 0)
+                if gpu_count <= 0:
+                    continue
+                for idx in range(gpu_count):
+                    device = {
+                        "uuid": f"GPU-{vm.get('vm_name', 'vm')}-{idx}",
+                        "model": vm.get("gpu_model", "NVIDIA T4"),
+                        "utilization": vm.get("gpu_utilization", "medium"),
+                        "mig_profile": vm.get("gpu_mig_profile", ""),
+                    }
+                    row = self._init_gpu_device_row(start, end, **kwargs)
+                    yield self._update_vm_gpu_device_data(row, start, end, vm=vm, gpu_device=device, **kwargs)
 
     def _gen_quarter_hourly_vm_usage(self, **kwargs):
         """Create 15-minute interval data for each configured VM."""
