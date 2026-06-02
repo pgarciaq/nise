@@ -1,0 +1,201 @@
+---
+# OCP static data tuned for ros-ocp-backend Tier 1 node recommendation validation.
+#
+# Exercises: MachineSet fleet grouping, mixed utilization (idle / underutilized / overcommitted),
+# CPU- vs memory-stranded nodes (imbalanced usage), and multiple worker nodes in one MachineSet.
+#
+# ROS CSV includes machineset_name and node_capacity_pods (see nise/generators/ocp/ocp_generator.py).
+#
+# Use with:
+#   nise report ocp --static-report-file examples/ocp_node_recommendations/ocp_node_diversity_static_data.yml \
+#     --ocp-cluster-id <YOUR-CLUSTER-UUID> --ros-ocp-info --write-monthly \
+#     --insights-upload /tmp/nise_node_diversity
+#
+generators:
+  - OCPGenerator:
+      start_date: 2026-04-01
+      end_date: 2026-05-11
+      nodes:
+        # --- worker MachineSet: three underutilized nodes (fleet consolidation) ---
+        - node:
+          node_name: worker-0
+          machineset_name: worker
+          node_capacity_pods: 110
+          cpu_cores: 8
+          memory_gig: 32
+          resource_id: worker-0-id
+          namespaces:
+            ros-idle:
+              pods:
+                - pod:
+                  pod_name: idle-helper
+                  cpu_request: 0.05
+                  mem_request_gig: 0.1
+                  cpu_limit: 0.1
+                  mem_limit_gig: 0.25
+                  pod_seconds: 3600
+                  cpu_usage:
+                    full_period: 0.02
+                  mem_usage_gig:
+                    full_period: 0.05
+                  labels: label_app:idle|label_tier:batch
+                  workload: deployment
+        - node:
+          node_name: worker-1
+          machineset_name: worker
+          node_capacity_pods: 110
+          cpu_cores: 8
+          memory_gig: 32
+          resource_id: worker-1-id
+          namespaces:
+            ros-idle:
+              pods:
+                - pod:
+                  pod_name: metrics-scraper
+                  cpu_request: 0.1
+                  mem_request_gig: 0.2
+                  cpu_limit: 0.2
+                  mem_limit_gig: 0.5
+                  pod_seconds: 3600
+                  cpu_usage:
+                    full_period: 0.03
+                  mem_usage_gig:
+                    full_period: 0.08
+                  labels: label_app:metrics
+                  workload: deployment
+        - node:
+          node_name: worker-2
+          machineset_name: worker
+          node_capacity_pods: 110
+          cpu_cores: 8
+          memory_gig: 32
+          resource_id: worker-2-id
+          namespaces:
+            ros-idle:
+              pods:
+                - pod:
+                  pod_name: cron-runner
+                  cpu_request: 0.08
+                  mem_request_gig: 0.15
+                  cpu_limit: 0.15
+                  mem_limit_gig: 0.4
+                  pod_seconds: 3600
+                  cpu_usage:
+                    full_period: 0.025
+                  mem_usage_gig:
+                    full_period: 0.06
+                  labels: label_app:cron
+                  workload: deployment
+
+        # --- Overcommitted node (high CPU requests vs allocatable) ---
+        - node:
+          node_name: worker-hot
+          machineset_name: worker
+          node_capacity_pods: 110
+          cpu_cores: 4
+          memory_gig: 16
+          resource_id: worker-hot-id
+          namespaces:
+            ros-hot:
+              pods:
+                - pod:
+                  pod_name: cpu-hog-a
+                  cpu_request: 3
+                  mem_request_gig: 2
+                  cpu_limit: 4
+                  mem_limit_gig: 4
+                  pod_seconds: 3600
+                  cpu_usage:
+                    full_period: 2.5
+                  mem_usage_gig:
+                    full_period: 1.5
+                  labels: label_app:hot
+                  workload: deployment
+                - pod:
+                  pod_name: cpu-hog-b
+                  cpu_request: 2.5
+                  mem_request_gig: 1
+                  cpu_limit: 3
+                  mem_limit_gig: 2
+                  pod_seconds: 3600
+                  cpu_usage:
+                    full_period: 2.0
+                  mem_usage_gig:
+                    full_period: 0.8
+                  labels: label_app:hot
+                  workload: deployment
+
+        # --- CPU-stranded: high memory usage, low CPU (memory-heavy shape) ---
+        - node:
+          node_name: worker-mem-heavy
+          machineset_name: worker-mem
+          node_capacity_pods: 110
+          cpu_cores: 16
+          memory_gig: 128
+          resource_id: worker-mem-heavy-id
+          namespaces:
+            ros-stranded:
+              pods:
+                - pod:
+                  pod_name: mem-cache
+                  cpu_request: 0.5
+                  mem_request_gig: 48
+                  cpu_limit: 2
+                  mem_limit_gig: 64
+                  pod_seconds: 3600
+                  cpu_usage:
+                    full_period: 0.4
+                  mem_usage_gig:
+                    full_period: 40
+                  labels: label_app:cache|label_workload:memory
+                  workload: statefulset
+
+        # --- Memory-stranded: high CPU usage, low memory (compute-heavy shape) ---
+        - node:
+          node_name: worker-cpu-heavy
+          machineset_name: worker-compute
+          node_capacity_pods: 110
+          cpu_cores: 32
+          memory_gig: 64
+          resource_id: worker-cpu-heavy-id
+          namespaces:
+            ros-stranded:
+              pods:
+                - pod:
+                  pod_name: compute-job
+                  cpu_request: 24
+                  mem_request_gig: 8
+                  cpu_limit: 28
+                  mem_limit_gig: 16
+                  pod_seconds: 3600
+                  cpu_usage:
+                    full_period: 22
+                  mem_usage_gig:
+                    full_period: 6
+                  labels: label_app:compute|label_workload:batch
+                  workload: job
+
+        # --- Different capacity bucket (large node, low pod count) for capacity fallback grouping ---
+        - node:
+          node_name: worker-xl-0
+          machineset_name: worker-xl
+          node_capacity_pods: 250
+          cpu_cores: 32
+          memory_gig: 256
+          resource_id: worker-xl-0-id
+          namespaces:
+            ros-xl:
+              pods:
+                - pod:
+                  pod_name: xl-light
+                  cpu_request: 1
+                  mem_request_gig: 4
+                  cpu_limit: 2
+                  mem_limit_gig: 8
+                  pod_seconds: 3600
+                  cpu_usage:
+                    full_period: 0.5
+                  mem_usage_gig:
+                    full_period: 2
+                  labels: label_app:xl
+                  workload: deployment
