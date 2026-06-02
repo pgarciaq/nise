@@ -53,6 +53,8 @@ from nise.generators.ocp.ocp_generator import COST_OCP_REPORT_TYPE_TO_COLS
 from nise.generators.ocp.ocp_generator import ROS_OCP_REPORT_TYPE_TO_COLS
 from nise.generators.ocp.ocp_generator import OCPGenerator
 from nise.generators.ocp.ocp_generator import _gen_ros_gpu_metrics
+from nise.generators.ocp.ocp_generator import machineset_name_from_node
+from nise.generators.ocp.ocp_generator import node_capacity_pods_for_node
 
 MAX_VOL_GIGS = 100
 
@@ -1785,6 +1787,33 @@ class OCPGeneratorTestCase(TestCase):
         """Test that oom_count follows memory_rss_usage_container_sum in the ROS CSV header."""
         idx = OCP_ROS_USAGE_COLUMN.index("oom_count")
         self.assertEqual(OCP_ROS_USAGE_COLUMN[idx - 1], "memory_rss_usage_container_sum")
+
+    def test_ros_usage_column_node_metadata(self):
+        """ROS container CSV includes pod capacity and MachineSet name for node digests."""
+        self.assertIn("node_capacity_pods", OCP_ROS_USAGE_COLUMN)
+        self.assertIn("machineset_name", OCP_ROS_USAGE_COLUMN)
+        mem_idx = OCP_ROS_USAGE_COLUMN.index("node_capacity_memory_bytes")
+        self.assertEqual(OCP_ROS_USAGE_COLUMN[mem_idx + 1], "node_capacity_pods")
+        self.assertEqual(OCP_ROS_USAGE_COLUMN[mem_idx + 2], "machineset_name")
+
+    def test_machineset_name_from_node(self):
+        """MachineSet name is derived from node hostname prefix."""
+        self.assertEqual(machineset_name_from_node("worker-0"), "worker")
+        self.assertEqual(machineset_name_from_node("infra-1"), "infra")
+        self.assertEqual(machineset_name_from_node("worker-0.example.com"), "worker")
+
+    def test_node_capacity_pods_for_node(self):
+        """Large nodes get higher pod capacity than standard workers."""
+        self.assertEqual(node_capacity_pods_for_node(4, 16 * GIGABYTE), 110)
+        self.assertEqual(node_capacity_pods_for_node(32, 256 * GIGABYTE), 250)
+
+    def test_ros_data_contains_node_metadata(self):
+        """Generated ROS pod rows include machineset_name and node_capacity_pods."""
+        generator = OCPGenerator(self.two_hours_ago, self.now, {}, ros_ocp_info=True)
+        for pod_data in generator.ros_data.values():
+            self.assertIn("machineset_name", pod_data)
+            self.assertIn("node_capacity_pods", pod_data)
+            self.assertGreater(pod_data["node_capacity_pods"], 0)
 
     def test_ros_data_contains_oom_count(self):
         """Test that generated ROS pod data includes oom_count with valid values."""

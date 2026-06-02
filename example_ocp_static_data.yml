@@ -4,7 +4,9 @@ generators:
       # start_date: 2024-05-01
       nodes:
         - node:
-          node_name: alpha
+          node_name: worker-0
+          machineset_name: worker
+          node_capacity_pods: 110
           node_labels: label_key1:label_value1|label_key2:label_value2
           cpu_cores: 4
           memory_gig: 16
