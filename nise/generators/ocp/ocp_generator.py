@@ -18,6 +18,7 @@
 
 import datetime
 import json
+import re
 from collections import defaultdict
 from copy import deepcopy
 from random import choice
@@ -81,6 +82,7 @@ OCP_STORAGE_COLUMNS = (
     "interval_end",
     "namespace",
     "pod",
+    "vm_name",
     "node",
     "persistentvolumeclaim",
     "persistentvolume",
@@ -861,6 +863,17 @@ def get_vm_from_label(labels):
         key, value = label.split(":")
         if key == "label_vm_kubevirt_io_name":
             return value
+
+
+def vm_name_from_virt_launcher_pod(pod):
+    """Extract KubeVirt VM name from virt-launcher-<vmi>-<hash> pod names (operator fallback)."""
+    if not pod or not pod.startswith("virt-launcher-"):
+        return ""
+    stripped = pod[len("virt-launcher-") :]
+    match = re.search(r"-[a-z0-9]{5}$", stripped)
+    if match and match.start() > 0:
+        return stripped[: match.start()]
+    return stripped
 
 
 def machineset_name_from_node(node_name):
@@ -1840,9 +1853,14 @@ class OCPGenerator(AbstractGenerator):
         # persistentvolumeclaim_usage_byte_seconds is empty for claimless PersistentVolumes
         vc_usage = vc_usage_gig * GIGABYTE * HOUR if volume_request_storage_byte_seconds else None
 
+        vm_name = kwargs.get("vm_name") or ""
+        if not vm_name:
+            vm_name = vm_name_from_virt_launcher_pod(kwargs.get("pod") or "")
+
         data = {
             "namespace": kwargs.get("namespace"),
             "pod": kwargs.get("pod"),
+            "vm_name": vm_name,
             "node": kwargs.get("node"),
             "persistentvolumeclaim": kwargs.get("volume_claim"),
             "persistentvolume": kwargs.get("volume_name"),
@@ -2146,6 +2164,7 @@ class OCPGenerator(AbstractGenerator):
                     volume_claims = volume.get("volume_claims", [])
                     for vc_name, volume_claim in volume_claims.items():
                         pod = volume_claim.get("pod")
+                        vm_name = volume_claim.get("vm_name") or ""
                         vc_labels = volume_claim.get("labels")
                         capacity = volume_claim.get("capacity")
                         volume_claim_usage_gig = volume_claim.get("volume_claim_usage_gig", None)
@@ -2156,6 +2175,7 @@ class OCPGenerator(AbstractGenerator):
                             end,
                             volume_claim=vc_name,
                             pod=pod,
+                            vm_name=vm_name,
                             node=node,
                             volume_claim_labels=vc_labels,
                             vc_capacity=capacity,
