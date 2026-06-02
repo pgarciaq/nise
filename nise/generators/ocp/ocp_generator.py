@@ -269,6 +269,7 @@ OCP_ROS_NAMESPACE_USAGE_COLUMN = (
     "interval_start",
     "interval_end",
     "namespace",
+    "quota_name",
     "cpu_request_namespace_sum",
     "cpu_request_namespace_used",
     "cpu_limit_namespace_sum",
@@ -283,6 +284,12 @@ OCP_ROS_NAMESPACE_USAGE_COLUMN = (
     "memory_request_namespace_used",
     "memory_limit_namespace_sum",
     "memory_limit_namespace_used",
+    "storage_request_namespace_hard",
+    "storage_request_namespace_used",
+    "pods_namespace_hard",
+    "pods_namespace_used",
+    "object_count_namespace_hard",
+    "object_count_namespace_used",
     "memory_usage_namespace_avg",
     "memory_usage_namespace_max",
     "memory_usage_namespace_min",
@@ -710,6 +717,33 @@ def namespace_quota_used_values(
         "cpu_limit_namespace_used": cpu_limit_used,
         "memory_request_namespace_used": memory_request_used,
         "memory_limit_namespace_used": memory_limit_used,
+    }
+
+
+def namespace_quota_extended_values(quota_config, constant_values_ros_ocp=False):
+    """Optional per-ResourceQuota storage/pods/object-count for ROS namespace CSV."""
+    storage_hard = float(quota_config.get("storage_request_hard", 50 * 1024**3))
+    storage_used = float(
+        quota_config.get(
+            "storage_request_used",
+            storage_hard * (0.65 if constant_values_ros_ocp else uniform(0.3, 0.85)),
+        )
+    )
+    pods_hard = int(quota_config.get("pods_hard", 50))
+    pods_used = int(quota_config.get("pods_used", max(1, int(pods_hard * 0.6))))
+    object_hard = int(quota_config.get("object_count_hard", 100))
+    object_used = int(quota_config.get("object_count_used", max(1, int(object_hard * 0.5))))
+    storage_used = min(storage_used, storage_hard)
+    pods_used = min(pods_used, pods_hard)
+    object_used = min(object_used, object_hard)
+    return {
+        "quota_name": quota_config.get("name") or quota_config.get("quota_name") or "compute-quota",
+        "storage_request_namespace_hard": round(storage_hard, 5),
+        "storage_request_namespace_used": round(storage_used, 5),
+        "pods_namespace_hard": pods_hard,
+        "pods_namespace_used": pods_used,
+        "object_count_namespace_hard": object_hard,
+        "object_count_namespace_used": object_used,
     }
 
 
@@ -2049,18 +2083,25 @@ class OCPGenerator(AbstractGenerator):
             memory_rss_usage_mins.append(pod_data.get("memory_rss_usage_container_min", 0))
             memory_rss_usage_maxs.append(pod_data.get("memory_rss_usage_container_max", 0))
 
+        quota_cfg = self.namespace_resource_quota.get(namespace, {})
         quota_used = namespace_quota_used_values(
-            self.namespace_resource_quota.get(namespace, {}),
+            quota_cfg,
             cpu_request_sum,
             cpu_limit_sum,
             memory_request_sum,
             memory_limit_sum,
             constant_values_ros_ocp=self.constant_values_ros_ocp,
         )
+        quota_extended = (
+            namespace_quota_extended_values(quota_cfg, constant_values_ros_ocp=self.constant_values_ros_ocp)
+            if quota_cfg
+            else {"quota_name": ""}
+        )
 
         # Calculate aggregated metrics
         namespace_data = {
             "namespace": namespace,
+            **quota_extended,
             "cpu_request_namespace_sum": cpu_request_sum,
             "cpu_limit_namespace_sum": cpu_limit_sum,
             **quota_used,

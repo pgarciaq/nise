@@ -15,6 +15,9 @@
 #     --ocp-cluster-id <YOUR-CLUSTER-UUID> --ros-ocp-info --ros-only \
 #     --daily-reports --insights-upload /tmp/nise_ros_output
 #
+# For node recommendation diversity (MachineSet grouping, idle/overcommit/stranded):
+#   see examples/ocp_node_recommendations/ocp_node_diversity_static_data.yml
+#
 # Data window: 30+ days to ensure medium_term recommendations and fleet summary.
 # Adjust start_date/end_date to your desired range.
 generators:
@@ -51,6 +54,7 @@ generators:
             cost-management:
               # Optional ResourceQuota type=used values (cores and GiB) for ROS namespace CSV.
               resource_quota:
+                name: cost-management-quota
                 cpu_request_used: 2.5
                 cpu_limit_used: 6.0
                 memory_request_used_gig: 8
