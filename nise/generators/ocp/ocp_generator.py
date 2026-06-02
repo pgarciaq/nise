@@ -210,6 +210,8 @@ OCP_ROS_USAGE_COLUMN = (
     "resource_id",
     "node_capacity_cpu_cores",
     "node_capacity_memory_bytes",
+    "node_capacity_pods",
+    "machineset_name",
     "pod",
     "container_name",
     "owner_name",
@@ -861,6 +863,39 @@ def get_vm_from_label(labels):
             return value
 
 
+def machineset_name_from_node(node_name):
+    """Derive MachineSet name from node hostname (e.g. worker-0 -> worker, infra-1 -> infra)."""
+    if not node_name:
+        return ""
+    host = node_name.split(".", 1)[0]
+    prefix, sep, suffix = host.rpartition("-")
+    if sep and suffix.isdigit():
+        return prefix
+    if "-" in host:
+        return host.split("-", 1)[0]
+    return host
+
+
+def node_capacity_pods_for_node(cpu_cores, memory_bytes):
+    """kube_node_status_capacity pods: 110 on standard nodes, 250 on large nodes."""
+    cores = cpu_cores or 0
+    mem = memory_bytes or 0
+    if mem >= 128 * GIGABYTE or cores >= 32:
+        return 250
+    return 110
+
+
+def ros_node_metadata(node):
+    """MachineSet and pod capacity fields for ROS container CSV rows."""
+    name = node.get("name") or ""
+    cpu_cores = node.get("cpu_cores")
+    memory_bytes = node.get("memory_bytes")
+    return {
+        "machineset_name": node.get("machineset_name") or machineset_name_from_node(name),
+        "node_capacity_pods": node.get("node_capacity_pods") or node_capacity_pods_for_node(cpu_cores, memory_bytes),
+    }
+
+
 class OCPGenerator(AbstractGenerator):
     """Defines a abstract class for generators."""
 
@@ -1005,13 +1040,18 @@ class OCPGenerator(AbstractGenerator):
                 processed_namespaces = {
                     ns_name: ({} if ns_data is None else ns_data) for ns_name, ns_data in raw_namespaces.items()
                 }
+                node_name = item.get("node_name", "node_" + self.fake.word())
+                cpu_cores = item.get("cpu_cores", randint(2, 16))
                 node = {
-                    "name": item.get("node_name", "node_" + self.fake.word()),
-                    "cpu_cores": item.get("cpu_cores", randint(2, 16)),
+                    "name": node_name,
+                    "cpu_cores": cpu_cores,
                     "memory_bytes": memory_bytes,
                     "resource_id": "i-" + resource_id,
                     "namespaces": processed_namespaces,
                     "node_labels": item.get("node_labels"),
+                    "machineset_name": item.get("machineset_name") or machineset_name_from_node(node_name),
+                    "node_capacity_pods": item.get("node_capacity_pods")
+                    or node_capacity_pods_for_node(cpu_cores, memory_bytes),
                 }
                 nodes.append(node)
         else:
@@ -1020,12 +1060,15 @@ class OCPGenerator(AbstractGenerator):
             for _ in range(num_nodes):
                 memory_gig = randint(2, 8)
                 memory_bytes = memory_gig * GIGABYTE
+                node_name = "node_" + self.fake.word()
+                cpu_cores = randint(2, 16)
                 node = {
-                    "name": "node_" + self.fake.word(),
-                    "cpu_cores": randint(2, 16),
+                    "name": node_name,
+                    "cpu_cores": cpu_cores,
                     "memory_bytes": memory_bytes,
                     "resource_id": "i-" + uuid4().hex[:AWS_RESID_LENGTH],
                     "node_labels": self._gen_openshift_labels(seeding=seeded_labels),
+                    **ros_node_metadata({"name": node_name, "cpu_cores": cpu_cores, "memory_bytes": memory_bytes}),
                 }
                 nodes.append(node)
         return nodes
@@ -1194,6 +1237,7 @@ class OCPGenerator(AbstractGenerator):
             "resource_id": node.get("resource_id"),
             "node_capacity_cpu_cores": cpu_cores,
             "node_capacity_memory_bytes": memory_bytes,
+            **ros_node_metadata(node),
             "pod": pod_name,
             "container_name": pod_name,
             "owner_name": owner_name,
@@ -1314,6 +1358,7 @@ class OCPGenerator(AbstractGenerator):
                         "resource_id": node.get("resource_id"),
                         "node_capacity_cpu_cores": cpu_cores,
                         "node_capacity_memory_bytes": memory_bytes,
+                        **ros_node_metadata(node),
                         "pod": pod_name,
                         "container_name": pod_name,
                         "owner_name": owner_name,
