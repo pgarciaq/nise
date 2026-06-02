@@ -1,0 +1,53 @@
+---
+# OCP static data tuned for dual-engine divergence (cost vs performance).
+#
+# Workload patterns (30+ day window for medium/long terms):
+# - spike-cpu-api: High CPU request (4000m) with low steady usage (~400m via cpu_usage).
+#   Cost engine (P60) sizes toward typical usage; performance (P98/P99) retains more headroom.
+# - steady-mem-worker: Flat memory usage (~3.8 GiB) so cost and performance memory sizing stay similar.
+#
+# Use with:
+#   nise report ocp --static-report-file examples/ocp_dual_engine/ocp_static_data.yml \
+#     --ocp-cluster-id <YOUR-CLUSTER-UUID> --ros-ocp-info --write-monthly \
+#     --insights-upload /tmp/nise_dual_engine_output
+#
+generators:
+  - OCPGenerator:
+      start_date: 2026-04-01
+      end_date: 2026-05-11
+      nodes:
+        - node:
+          node_name: dual-engine-worker-1
+          node_labels: "label_environment:staging|label_role:compute"
+          cpu_cores: 16
+          memory_gig: 64
+          resource_id: dual-engine-node-1
+          namespaces:
+            dual-engine-demo:
+              pods:
+                - pod:
+                  pod_name: spike-cpu-api
+                  cpu_request: 4000
+                  mem_request_gig: 2
+                  cpu_limit: 8000
+                  mem_limit_gig: 4
+                  replica_count: 2
+                  labels: label_app:spike-cpu|label_workload_pattern:bursty
+                  workload: deployment
+                  cpu_usage:
+                    full_period: 0.4
+                  mem_usage_gig:
+                    full_period: 1.8
+                - pod:
+                  pod_name: steady-mem-worker
+                  cpu_request: 500
+                  mem_request_gig: 4
+                  cpu_limit: 1000
+                  mem_limit_gig: 6
+                  replica_count: 1
+                  labels: label_app:steady-mem|label_workload_pattern:stable
+                  workload: deployment
+                  cpu_usage:
+                    full_period: 0.45
+                  mem_usage_gig:
+                    full_period: 3.8
