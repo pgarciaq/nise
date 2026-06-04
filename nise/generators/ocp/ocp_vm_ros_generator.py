@@ -233,8 +233,9 @@ class OCPVirtualMachineGenerator(AbstractGenerator):
             read_bps = read_iops * 131072
             write_bps = write_iops * 131072
         elif bool(vm.get("random_io", False)):
-            read_iops = 2500
-            write_iops = 1500
+            # Peak IOPS > 5000 for ROS storage-tier notification 68 (random high IOPS).
+            read_iops = 3000
+            write_iops = 2500
             read_bps = read_iops * 4096
             write_bps = write_iops * 4096
         elif bool(vm.get("low_io", False)):
