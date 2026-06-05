@@ -1885,7 +1885,7 @@ class OCPGenerator(AbstractGenerator):
         vc_capacity_gig = kwargs["vc_capacity"] / GIGABYTE
 
         vc_usage_gig = round(uniform(2.0, vc_capacity_gig), 2)
-        if volume_claim_usage_gig:
+        if volume_claim_usage_gig is not None:
             vc_usage_gig = min(volume_claim_usage_gig, vc_capacity_gig)
         # persistentvolumeclaim_usage_byte_seconds is empty for claimless PersistentVolumes
         vc_usage = vc_usage_gig * GIGABYTE * HOUR if volume_request_storage_byte_seconds else None

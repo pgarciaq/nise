@@ -757,6 +757,23 @@ class OCPGeneratorTestCase(TestCase):
             out_row.get("persistentvolumeclaim_capacity_byte_seconds"),
         )
 
+    def test_update_storage_data_zero_usage_gig(self):
+        """Explicit zero usage must not fall back to random usage."""
+        kwargs = {
+            "volume_claim_usage_gig": {"full_period": 0},
+            "vc_capacity": 20 * GIGABYTE,
+            "namespace": self.fake.word(),
+            "pod": self.fake.word(),
+            "volume_claim": self.fake.uuid4(),
+            "volume_name": self.fake.word(),
+            "storage_class": self.fake.word(),
+            "volume_request": 20 * GIGABYTE,
+        }
+        generator = OCPGenerator(self.two_hours_ago, self.now, {})
+        in_row = generator._init_data_row(self.two_hours_ago, self.now, report_type=OCP_STORAGE_USAGE)
+        out_row = generator._update_storage_data(copy(in_row), self.two_hours_ago, self.now, **kwargs)
+        self.assertEqual(out_row.get("persistentvolumeclaim_usage_byte_seconds"), 0)
+
     def test_generate_data(self):
         """Test that generate_data calls the test method."""
         generator = OCPGenerator(self.two_hours_ago, self.now, self.attributes)
