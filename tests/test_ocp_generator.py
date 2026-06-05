@@ -2440,6 +2440,20 @@ class GenRosGpuMetricsTest(TestCase):
         self.assertAlmostEqual(m["sm_active_avg"], 0.50)
         self.assertAlmostEqual(m["accelerator_frame_buffer_usage_avg"], 5000.0)
 
+    def test_dcgm_model_name_with_profiling_overrides(self):
+        """DCGM-style names not in GPU_PROFILING_SUPPORTED still get metrics when overridden."""
+        overrides = {
+            "sm_active_avg": 0.12,
+            "tensor_pipe_active_avg": 0.08,
+            "dram_active_avg": 0.15,
+            "fb_usage_avg": 4096.0,
+        }
+        m = _gen_ros_gpu_metrics("NVIDIA H100 80GB HBM3", 81920, overrides=overrides)
+        self.assertEqual(m["accelerator_model_name"], "NVIDIA H100 80GB HBM3")
+        self.assertAlmostEqual(m["sm_active_avg"], 0.12)
+        self.assertAlmostEqual(m["tensor_pipe_active_avg"], 0.08)
+        self.assertAlmostEqual(m["dram_active_avg"], 0.15)
+
 
 class ResolveMigPartitionIdTest(TestCase):
     """Tests for OCPGenerator._resolve_mig_partition_id."""
