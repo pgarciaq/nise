@@ -572,7 +572,10 @@ def _gen_ros_gpu_metrics(gpu_model, gpu_memory_mib, mig_profile=None, overrides=
         "accelerator_frame_buffer_usage_avg": fb_usage_avg,
     }
 
-    if gpu_model in GPU_PROFILING_SUPPORTED:
+    has_profiling_overrides = any(
+        overrides.get(k) not in (None, "") for k in ("sm_active_avg", "tensor_pipe_active_avg", "dram_active_avg")
+    )
+    if gpu_model in GPU_PROFILING_SUPPORTED or has_profiling_overrides:
         tensor = overrides.get("tensor_pipe_active_avg", round(uniform(0.0, 0.85), 4))
         dram = overrides.get("dram_active_avg", round(uniform(0.05, 0.95), 4))
         sm = overrides.get("sm_active_avg", round(uniform(0.05, 0.90), 4))
