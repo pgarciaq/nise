@@ -103,6 +103,7 @@ venv.bak/
 .idea
 .vscode
 *.sw[po]
+*~
 *.code-workspace
 
 # Generated csv files
