@@ -1,0 +1,45 @@
+---
+# Example: WebLogic Domain CRD workloads alongside standard Deployments.
+# Demonstrates arbitrary workload_type support (COST-7274).
+generators:
+  - OCPGenerator:
+      start_date: 2026-06-01
+      end_date: 2026-06-30
+      nodes:
+        - node:
+          node_name: domain-node1
+          cpu_cores: 16
+          memory_gig: 64
+          resource_id: 77000001
+          namespaces:
+            weblogic-prod:
+              pods:
+                - pod:
+                  pod_name: weblogic-admin
+                  cpu_request: 2
+                  mem_request_gig: 4
+                  cpu_limit: 4
+                  mem_limit_gig: 8
+                  pod_seconds: 3600
+                  labels: label_environment:prod|label_app:weblogic|label_tier:admin
+                  workload: domain
+                - pod:
+                  pod_name: weblogic-managed1
+                  cpu_request: 4
+                  mem_request_gig: 8
+                  cpu_limit: 8
+                  mem_limit_gig: 16
+                  pod_seconds: 3600
+                  labels: label_environment:prod|label_app:weblogic|label_tier:managed
+                  workload: domain
+            app-services:
+              pods:
+                - pod:
+                  pod_name: api-gateway
+                  cpu_request: 1
+                  mem_request_gig: 2
+                  cpu_limit: 2
+                  mem_limit_gig: 4
+                  pod_seconds: 3600
+                  labels: label_environment:prod|label_app:gateway
+                  workload: deployment
