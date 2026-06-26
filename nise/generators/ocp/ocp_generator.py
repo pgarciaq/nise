@@ -401,6 +401,7 @@ OCP_OWNER_WORKLOAD_CHOICES = {
     "deploymentconfig": (None, "ReplicationController", None, "deploymentconfig"),
     "statefulset": (None, "StatefulSet", None, "statefulset"),
     "daemonset": (None, "DaemonSet", None, "daemonset"),
+    "domain": (None, "Domain", None, "domain"),  # WebLogic Domain CRD
     "job": (None, "Job", None, "job"),  # not supported by Kruize - recommendation won't be generated!
     "manual_pod": ("<none>", "<none>", None, None),  # manually created Pod - recommendation won't be generated!
 }
@@ -641,10 +642,11 @@ def get_storage_class_and_driver():
 def get_owner_workload(pod, workload=None):
     if not workload:
         workload = choice(list(OCP_OWNER_WORKLOAD_CHOICES.keys())[:-2])  # omit job and manual_pod from random choices
-    on, ok, wl, wt = OCP_OWNER_WORKLOAD_CHOICES.get(
-        workload.lower(),
-        choice(list(OCP_OWNER_WORKLOAD_CHOICES.values())[:-2]),  # omit job and manual_pod from random choices
-    )
+    lookup = OCP_OWNER_WORKLOAD_CHOICES.get(workload.lower())
+    if lookup is None:
+        # Arbitrary CRD workload type from static YAML (e.g., "domain" → owner_kind "Domain")
+        return pod, workload.capitalize(), pod, workload.lower()
+    on, ok, wl, wt = lookup
     if on == "<none>" and wl == "<none>":  # manually created Pod
         return on, ok, wl, wt
     elif wl == "<none>":  # manually created ReplicaSet or ReplicationController
