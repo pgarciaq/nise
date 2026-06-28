@@ -518,17 +518,25 @@ VM_GUEST_VERSION = ("10.0", "7.5", "8.1", "9.5")
 
 GPU_MODELS = (
     "Tesla T4",
-    "A100",
-    "V100",
-    "H100",
-    "A30",
-    "L40S",
-    "A10",
-    "A10G",
+    "NVIDIA A100-SXM4-80GB",
+    "Tesla V100-SXM2-32GB",
+    "NVIDIA H100-SXM5-80GB",
+    "NVIDIA A30-24GB",
+    "NVIDIA L40S",
+    "NVIDIA A10",
+    "NVIDIA A10G",
 )
 
 GPU_MEMORY_CAPACITY = {
     "Tesla T4": 15360,
+    "NVIDIA A100-SXM4-80GB": 81920,
+    "Tesla V100-SXM2-32GB": 32768,
+    "NVIDIA H100-SXM5-80GB": 81920,
+    "NVIDIA A30-24GB": 24576,
+    "NVIDIA L40S": 49152,
+    "NVIDIA A10": 24576,
+    "NVIDIA A10G": 24576,
+    # Legacy short names for backward compatibility with static YAML configs
     "A100": 40960,
     "V100": 32768,
     "H100": 81920,
@@ -540,8 +548,24 @@ GPU_MEMORY_CAPACITY = {
 
 GPU_VENDOR = "nvidia_com_gpu"
 
-# Tier 1: Turing+ datacenter GPUs that support DCGM PROF_ metrics
-GPU_PROFILING_SUPPORTED = {"Tesla T4", "A100", "H100", "A30", "L40S", "A10", "A10G"}
+# Tier 1: Turing+ datacenter GPUs that support DCGM PROF_ metrics.
+# Both DCGM-style and short names are included for backward compatibility
+# with static YAML configs that may use either format.
+GPU_PROFILING_SUPPORTED = {
+    "Tesla T4",
+    "NVIDIA A100-SXM4-80GB",
+    "NVIDIA H100-SXM5-80GB",
+    "NVIDIA A30-24GB",
+    "NVIDIA L40S",
+    "NVIDIA A10",
+    "NVIDIA A10G",
+    "A100",
+    "H100",
+    "A30",
+    "L40S",
+    "A10",
+    "A10G",
+}
 
 
 def _gen_ros_gpu_metrics(gpu_model, gpu_memory_mib, mig_profile=None, overrides=None):
