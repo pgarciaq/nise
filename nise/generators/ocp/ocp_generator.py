@@ -35,6 +35,9 @@ from faker import Faker
 
 from nise.generators.generator import AbstractGenerator
 from nise.generators.generator import REPORT_TYPE
+from nise.generators.ocp.gpu_models import DEFAULT_GPU_MODELS as GPU_MODELS
+from nise.generators.ocp.gpu_models import get_fb_total_mib as _get_fb_total_mib
+from nise.generators.ocp.gpu_models import supports_profiling as _supports_profiling
 
 FAKER = Faker()
 
@@ -516,56 +519,7 @@ VM_GUEST_OS = (
 
 VM_GUEST_VERSION = ("10.0", "7.5", "8.1", "9.5")
 
-GPU_MODELS = (
-    "Tesla T4",
-    "NVIDIA A100-SXM4-80GB",
-    "Tesla V100-SXM2-32GB",
-    "NVIDIA H100-SXM5-80GB",
-    "NVIDIA A30-24GB",
-    "NVIDIA L40S",
-    "NVIDIA A10",
-    "NVIDIA A10G",
-)
-
-GPU_MEMORY_CAPACITY = {
-    "Tesla T4": 15360,
-    "NVIDIA A100-SXM4-80GB": 81920,
-    "Tesla V100-SXM2-32GB": 32768,
-    "NVIDIA H100-SXM5-80GB": 81920,
-    "NVIDIA A30-24GB": 24576,
-    "NVIDIA L40S": 49152,
-    "NVIDIA A10": 24576,
-    "NVIDIA A10G": 24576,
-    # Legacy short names for backward compatibility with static YAML configs
-    "A100": 40960,
-    "V100": 32768,
-    "H100": 81920,
-    "A30": 24576,
-    "L40S": 49152,
-    "A10": 24576,
-    "A10G": 24576,
-}
-
 GPU_VENDOR = "nvidia_com_gpu"
-
-# Tier 1: Turing+ datacenter GPUs that support DCGM PROF_ metrics.
-# Both DCGM-style and short names are included for backward compatibility
-# with static YAML configs that may use either format.
-GPU_PROFILING_SUPPORTED = {
-    "Tesla T4",
-    "NVIDIA A100-SXM4-80GB",
-    "NVIDIA H100-SXM5-80GB",
-    "NVIDIA A30-24GB",
-    "NVIDIA L40S",
-    "NVIDIA A10",
-    "NVIDIA A10G",
-    "A100",
-    "H100",
-    "A30",
-    "L40S",
-    "A10",
-    "A10G",
-}
 
 
 def _gen_ros_gpu_metrics(gpu_model, gpu_memory_mib, mig_profile=None, overrides=None):
@@ -600,7 +554,7 @@ def _gen_ros_gpu_metrics(gpu_model, gpu_memory_mib, mig_profile=None, overrides=
     has_profiling_overrides = any(
         overrides.get(k) not in (None, "") for k in ("sm_active_avg", "tensor_pipe_active_avg", "dram_active_avg")
     )
-    if gpu_model in GPU_PROFILING_SUPPORTED or has_profiling_overrides:
+    if _supports_profiling(gpu_model) or has_profiling_overrides:
         tensor = overrides.get("tensor_pipe_active_avg", round(uniform(0.0, 0.85), 4))
         dram = overrides.get("dram_active_avg", round(uniform(0.05, 0.95), 4))
         sm = overrides.get("sm_active_avg", round(uniform(0.05, 0.90), 4))
@@ -2340,7 +2294,7 @@ class OCPGenerator(AbstractGenerator):
                                 "gpu_uuid": gpu_uuid,
                                 "gpu_model_name": gpu_model,
                                 "gpu_vendor_name": GPU_VENDOR,
-                                "gpu_memory_capacity_mib": GPU_MEMORY_CAPACITY.get(gpu_model, 15360),
+                                "gpu_memory_capacity_mib": _get_fb_total_mib(gpu_model),
                             }
                         )
                     gpus[pod_name] = pod_gpus
@@ -2361,7 +2315,7 @@ class OCPGenerator(AbstractGenerator):
                 gpu_model = gpu_spec.get("gpu_model", choice(GPU_MODELS))
                 name = f"nise.ocp.gpu.{node_name}.{pod_name}.{gpu_idx}"
                 parent_gpu_uuid = f"GPU-{uuid5(NAMESPACE_DNS, name)}"
-                gpu_memory = gpu_spec.get("gpu_memory_capacity_mib", GPU_MEMORY_CAPACITY.get(gpu_model, 15360))
+                gpu_memory = gpu_spec.get("gpu_memory_capacity_mib", _get_fb_total_mib(gpu_model))
                 mig_instances = gpu_spec.get("mig_instances", [])
                 gpu_metric_overrides = {}
                 for ovr_key in ("sm_active_avg", "tensor_pipe_active_avg", "dram_active_avg", "fb_usage_avg"):
@@ -2422,7 +2376,7 @@ class OCPGenerator(AbstractGenerator):
             if pod_gpus:
                 gpu = pod_gpus[0]
                 gpu_model = gpu["gpu_model_name"]
-                gpu_memory = gpu.get("gpu_memory_capacity_mib", GPU_MEMORY_CAPACITY.get(gpu_model, 15360))
+                gpu_memory = gpu.get("gpu_memory_capacity_mib", _get_fb_total_mib(gpu_model))
                 mig_profile = gpu.get("mig_profile")
                 overrides = gpu.get("metric_overrides")
                 ros_pod.update(_gen_ros_gpu_metrics(gpu_model, gpu_memory, mig_profile, overrides))
