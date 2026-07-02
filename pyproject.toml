@@ -54,12 +54,18 @@ include = [
 
 [tool.hatch.build.targets.wheel.force-include]
 "nise/aws-template-manifest.json" = "nise/aws-template-manifest.json"
+"examples/ros_ocp_e2e" = "nise/examples/ros_ocp_e2e"
+"examples/ros_ocp_seeding" = "nise/examples/ros_ocp_seeding"
 
 [tool.hatch.build.targets.sdist]
 include = [
   "nise/**/*.py",
   "nise/aws-template-manifest.json",
   "nise/yaml_generators/static/*",
+  "examples/ros_ocp_e2e/*.yml",
+  "examples/ros_ocp_e2e/README.md",
+  "examples/ros_ocp_seeding/*.yml",
+  "examples/ros_ocp_seeding/README.md",
 ]
 
 [tool.ruff]
