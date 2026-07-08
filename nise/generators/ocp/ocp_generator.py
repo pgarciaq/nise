@@ -970,6 +970,7 @@ class OCPGenerator(AbstractGenerator):
         self.pod_pvc_map = {}
         self.vm_pod_map = {}
         self.namespace_resource_quota = {}
+        self._row_template_cache = {}
         self.cluster_resource_quotas = self._gen_cluster_resource_quotas()
         self.nodes = self._gen_nodes()
         self._load_namespace_resource_quota_configs(self.nodes)
@@ -1225,17 +1226,15 @@ class OCPGenerator(AbstractGenerator):
         cpu_limit = min(specified_pod.get("cpu_limit", cpu_cores), cpu_cores)
         cpu_request = min(specified_pod.get("cpu_request", round(uniform(0.02, cpu_limit), 5)), cpu_limit)
         cpu_usage = specified_pod.get("cpu_usage", {})
-        for key, value in cpu_usage.items():
-            if value > cpu_limit:
-                cpu_usage[key] = cpu_limit
+        cpu_usage = {k: min(v, cpu_limit) for k, v in cpu_usage.items()}
+        cpu_usage = self._pre_parse_usage_dates(cpu_usage)
 
         memory_gig = memory_bytes / GIGABYTE
         mem_limit_gig = min(specified_pod.get("mem_limit_gig", memory_gig), memory_gig)
         mem_request_gig = min(specified_pod.get("mem_request_gig", round(uniform(25.0, 80.0), 2)), mem_limit_gig)
         memory_usage_gig = specified_pod.get("mem_usage_gig", {})
-        for key, value in memory_usage_gig.items():
-            if value > mem_limit_gig:
-                memory_usage_gig[key] = mem_limit_gig
+        memory_usage_gig = {k: min(v, mem_limit_gig) for k, v in memory_usage_gig.items()}
+        memory_usage_gig = self._pre_parse_usage_dates(memory_usage_gig)
 
         pod = {
             "namespace": namespace,
@@ -1451,9 +1450,9 @@ class OCPGenerator(AbstractGenerator):
             claim_capacity = specified_vc.get("capacity_gig", volume_request_gig) * GIGABYTE
             usage_gig = specified_vc.get("volume_claim_usage_gig")
             if usage_gig:
-                for key, value in usage_gig.items():
-                    if value > claim_capacity / GIGABYTE:
-                        usage_gig[key] = claim_capacity / GIGABYTE
+                cap_gig = claim_capacity / GIGABYTE
+                usage_gig = {k: min(v, cap_gig) for k, v in usage_gig.items()}
+                usage_gig = self._pre_parse_usage_dates(usage_gig)
             volume_claims[vol_claim] = {
                 "namespace": namespace,
                 "volume": volume,
@@ -1591,9 +1590,8 @@ class OCPGenerator(AbstractGenerator):
                         cpu_limit_cores,
                     )
                     cpu_usage = specified_vm.get("cpu_usage", {})
-                    for key, value in cpu_usage.items():
-                        if value > cpu_limit_cores:
-                            cpu_usage[key] = cpu_limit_cores
+                    cpu_usage = {k: min(v, cpu_limit_cores) for k, v in cpu_usage.items()}
+                    cpu_usage = self._pre_parse_usage_dates(cpu_usage)
 
                     memory_gig = memory_bytes / GIGABYTE
                     mem_limit_gig = min(specified_vm.get("mem_limit_gig", memory_gig), memory_gig)
@@ -1601,10 +1599,8 @@ class OCPGenerator(AbstractGenerator):
                         specified_vm.get("mem_request_gig", round(uniform(25.0, 80.0), 2)), mem_limit_gig
                     )
                     memory_usage_gig = specified_vm.get("mem_usage_gig", {})
-                    for key, value in memory_usage_gig.items():
-                        if value > mem_limit_gig:
-                            memory_usage_gig[key] = mem_limit_gig
-                        memory_usage_gig[key] *= GIGABYTE
+                    memory_usage_gig = {k: min(v, mem_limit_gig) * GIGABYTE for k, v in memory_usage_gig.items()}
+                    memory_usage_gig = self._pre_parse_usage_dates(memory_usage_gig)
                     vms[vm] = (
                         {
                             "node": node.get("name"),
@@ -1703,17 +1699,21 @@ class OCPGenerator(AbstractGenerator):
         if not isinstance(end, datetime.datetime):
             raise ValueError("end must be a date object.")
 
-        bill_begin = start.replace(microsecond=0, second=0, minute=0, hour=0, day=1)
-        bill_end = AbstractGenerator.next_month(bill_begin)
-        row = {}
         report_type = kwargs.get(REPORT_TYPE)
-        for column in OCP_REPORT_TYPE_TO_COLS[report_type]:
-            row[column] = ""
-            if column == "report_period_end":
-                row[column] = OCPGenerator.timestamp(bill_end)
-            elif column == "report_period_start":
-                row[column] = OCPGenerator.timestamp(bill_begin)
-        return row
+        cache_key = (report_type, start.year, start.month)
+        template = self._row_template_cache.get(cache_key)
+        if template is None:
+            bill_begin = start.replace(microsecond=0, second=0, minute=0, hour=0, day=1)
+            bill_end = AbstractGenerator.next_month(bill_begin)
+            template = {}
+            for column in OCP_REPORT_TYPE_TO_COLS[report_type]:
+                template[column] = ""
+                if column == "report_period_end":
+                    template[column] = OCPGenerator.timestamp(bill_end)
+                elif column == "report_period_start":
+                    template[column] = OCPGenerator.timestamp(bill_begin)
+            self._row_template_cache[cache_key] = template
+        return template.copy()
 
     def _add_common_usage_info(self, row, start, end, **kwargs):
         """Add common usage information."""
@@ -1722,14 +1722,30 @@ class OCPGenerator(AbstractGenerator):
         return row
 
     @staticmethod
+    def _pre_parse_usage_dates(usage_dict):
+        """Convert string date keys in a usage dict to datetime.date objects.
+
+        Called once at init time so the hot-loop _get_usage_for_date can
+        compare date objects directly instead of calling dateutil.parser.parse
+        on every invocation.
+        """
+        if not usage_dict:
+            return usage_dict
+        parsed = {}
+        for key, value in usage_dict.items():
+            if key == "full_period":
+                parsed[key] = value
+            else:
+                parsed[parser.parse(key).date()] = value
+        return parsed
+
+    @staticmethod
     def _get_usage_for_date(usage_dict, start):
         """Return usage for specified hour."""
         if usage_dict:
-            for date, usage in usage_dict.items():
-                if date == "full_period":
-                    return usage
-                if parser.parse(date).date() == start.date():
-                    return usage
+            if "full_period" in usage_dict:
+                return usage_dict["full_period"]
+            return usage_dict.get(start.date())
         return None
 
     def _update_pod_data(self, row, start, end, **kwargs):

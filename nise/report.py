@@ -764,7 +764,7 @@ def aws_create_report(options):  # noqa: C901
             num_instances = 1 if attributes else randint(2, 60)
             for _ in range(num_instances):
                 for hour in gen.generate_data():
-                    data += [hour]
+                    data.append(hour)
                     if len(data) == options.get("row_limit"):
                         file_number += 1
                         month_output_file = write_aws_file(
@@ -1005,7 +1005,7 @@ def ocp_create_report(options):  # noqa: C901
             for report_type in gen.ocp_report_generation.keys():
                 LOG.info(f"Generating data for {report_type} for {month}")
                 for hour in gen.generate_data(report_type):
-                    data[report_type] += [hour]
+                    data[report_type].append(hour)
                     if len(data[report_type]) == options.get("row_limit"):
                         file_numbers[report_type] += 1
                         month_output_file = write_ocp_file(
@@ -1376,7 +1376,7 @@ def gcp_create_report(options):  # noqa: C901
                     generator_cls = generator.get("generator")
                     gen = generator_cls(gen_start_date, gen_end_date, currency, project, attributes=attributes)
                     for hour in gen.generate_data():
-                        data += [hour]
+                        data.append(hour)
                     count += 1
                     if count % ten_percent == 0:
                         LOG.info(f"Done with {count} of {num_gens} generators.")
@@ -1417,7 +1417,7 @@ def _gcp_bigquery_process(
             generator_cls = generator.get("generator")
             gen = generator_cls(start_date, end_date, currency, project, attributes=attributes)
             for hour in gen.generate_data():
-                data += [hour]
+                data.append(hour)
             count += 1
             if count % ten_percent == 0:
                 LOG.info(f"Done with {count} of {num_gens} generators.")

@@ -664,10 +664,12 @@ class OCPGeneratorTestCase(TestCase):
 
     def test_get_usage_for_date(self):
         """Test that get_usage_for_date returns selected data."""
-        test_usage = self._usage_dict()
-        start_date = random.choice(list(test_usage.keys()))
-        output = OCPGenerator._get_usage_for_date(test_usage, datetime.strptime(start_date, "%m-%d-%Y"))
-        self.assertEqual(output, test_usage.get(start_date))
+        raw_usage = self._usage_dict()
+        test_usage = OCPGenerator._pre_parse_usage_dates(raw_usage)
+        start_date_obj = random.choice([k for k in test_usage.keys() if k != "full_period"])
+        start_datetime = datetime.combine(start_date_obj, datetime.min.time())
+        output = OCPGenerator._get_usage_for_date(test_usage, start_datetime)
+        self.assertEqual(output, test_usage.get(start_date_obj))
 
     def test_init_data_row(self):
         """Test that init_data_row initializes a row of data."""
