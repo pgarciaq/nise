@@ -2133,29 +2133,30 @@ class OCPGenerator(AbstractGenerator):
 
     def _gen_quarter_hourly_ros_ocp_namespace_usage(self, **kwargs):
         """Create quarter-hourly namespace aggregated data from container data."""
+        unique_namespaces = {
+            pod_data.get("namespace") for pod_data in self.ros_data.values() if pod_data.get("namespace")
+        }
         for quarter_hour in self.quarter_hours:
             start = quarter_hour.get("start")
             end = quarter_hour.get("end")
-            unique_namespaces = set()
-            for pod_data in self.ros_data.values():
-                if namespace := pod_data.get("namespace"):
-                    unique_namespaces.add(namespace)
 
-            # Generate data for each namespace
             for namespace in unique_namespaces:
                 namespace_data = self._aggregate_namespace_data(namespace, start, end)
                 if namespace_data and namespace_data.get("namespace"):
                     namespace_kwargs = kwargs.copy()
                     namespace_kwargs[REPORT_TYPE] = OCP_ROS_NAMESPACE_USAGE
                     namespace_kwargs["namespace"] = namespace
+                    namespace_kwargs["namespace_data"] = namespace_data
 
                     row = self._init_data_row(start, end, **namespace_kwargs)
                     yield self._update_data(row, start, end, **namespace_kwargs)
 
     def _update_ros_ocp_namespace_data(self, row, start, end, **kwargs):
         """Update the data row with aggregated namespace data."""
-        namespace = kwargs.get("namespace", "")
-        aggregated_data = self._aggregate_namespace_data(namespace, start, end)
+        aggregated_data = kwargs.get("namespace_data")
+        if aggregated_data is None:
+            namespace = kwargs.get("namespace", "")
+            aggregated_data = self._aggregate_namespace_data(namespace, start, end)
         row.update(aggregated_data)
         return row
 
