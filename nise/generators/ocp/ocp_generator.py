@@ -1160,19 +1160,28 @@ class OCPGenerator(AbstractGenerator):
         return quotas
 
     def _gen_namespaces(self, nodes):
-        """Create namespaces on specific nodes and keep relationship."""
-        namespaces = {}
+        """Create namespaces on specific nodes and keep relationship.
+
+        Returns a list of (namespace_name, node) tuples.  Using a list instead
+        of a dict is intentional: the same namespace name can appear on multiple
+        nodes (e.g. in a static YAML that schedules the "kube-system" namespace
+        on every node).  A dict keyed by namespace name silently drops all but
+        the last node, which causes pods, volumes, and VMs defined on earlier
+        nodes to be lost.
+
+        See https://github.com/pgarciaq/ros-ocp-backend/issues/254
+        """
+        namespaces = []
         for node in nodes:
             if node.get("namespaces"):
-                for name, _ in node.get("namespaces").items():
-                    namespace = name
-                    namespaces[namespace] = node
+                for name in node.get("namespaces"):
+                    namespaces.append((name, node))
             else:
                 num_namespaces = randint(2, 12)
                 for _ in range(num_namespaces):
                     namespace_suffix = choice(("ci", "qa", "prod", "proj", "dev", "staging"))
                     namespace = self.fake.word() + "_" + namespace_suffix
-                    namespaces[namespace] = node
+                    namespaces.append((namespace, node))
         return namespaces
 
     def _gen_openshift_labels(self, seeding=None):
@@ -1318,8 +1327,7 @@ class OCPGenerator(AbstractGenerator):
         pods = {}
         ros_ocp_data_pods = {}
         namespace2pod = defaultdict(list)
-        for namespace, node in namespaces.items():
-            namespace2pod[namespace] = []
+        for namespace, node in namespaces:
             if node.get("namespaces"):
                 specified_pods = node.get("namespaces").get(namespace).get("pods") or []
                 for specified_pod in specified_pods:
@@ -1473,7 +1481,7 @@ class OCPGenerator(AbstractGenerator):
     def _gen_volumes(self, namespaces, namespace2pods):  # noqa: C901
         """Create volumes on specific namespaces and keep relationship."""
         volumes = []
-        for namespace, node in namespaces.items():
+        for namespace, node in namespaces:
             if node.get("namespaces"):
                 specified_volumes = node.get("namespaces").get(namespace).get("volumes", [])
                 for specified_volume in specified_volumes:
@@ -1557,8 +1565,10 @@ class OCPGenerator(AbstractGenerator):
         """Create vms on specific namespaces and keep relationship."""
         vms = {}
         namespace2vm = {}
-        for namespace, node in namespaces.items():
-            namespace2vm[namespace] = []
+        vm_to_node = {}
+        for namespace, node in namespaces:
+            if namespace not in namespace2vm:
+                namespace2vm[namespace] = []
             if node.get("namespaces"):
                 specified_vms = node.get("namespaces").get(namespace).get("virtual_machines") or []
                 for specified_vm in specified_vms:
@@ -1615,6 +1625,7 @@ class OCPGenerator(AbstractGenerator):
                         | get_vm_instance(vm=specified_vm)
                         | self.get_vm_disk(specified_vc=specified_vm, static_report=True)
                     )
+                    vm_to_node[vm] = node
 
             else:
                 num_vms = randint(2, 20)
@@ -1650,10 +1661,12 @@ class OCPGenerator(AbstractGenerator):
                         | get_vm_instance()
                         | self.get_vm_disk(pod_name=vm)
                     )
+                    vm_to_node[vm] = node
 
         vms_defined_in_pod_labels = {get_vm_from_label(pod["pod_labels"]) for _, pod in self.pods.items()}
-        for namespace, node in namespaces.items():
-            for vm in namespace2vm[namespace]:
+        for namespace, vm_names in namespace2vm.items():
+            for vm in vm_names:
+                node = vm_to_node[vm]
                 vm_copy = deepcopy(vms[vm])
                 if vm not in vms_defined_in_pod_labels or vm not in self.vm_pod_map:
                     # create pod corresponding to VM since it does not exist

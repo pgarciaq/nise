@@ -163,7 +163,7 @@ class OCPGeneratorTestCase(TestCase):
                 attr = getattr(generator, attribute)
                 self.assertIsNotNone(attr)
 
-                if attribute in ("nodes", "volumes"):
+                if attribute in ("nodes", "volumes", "namespaces"):
                     self.assertIsInstance(attr, list)
                     self.assertNotEqual(attr, [])
                 else:
@@ -179,7 +179,7 @@ class OCPGeneratorTestCase(TestCase):
                 attr = getattr(generator, attribute)
                 self.assertIsNotNone(attr)
 
-                if attribute in ("nodes", "volumes"):
+                if attribute in ("nodes", "volumes", "namespaces"):
                     self.assertIsInstance(attr, list)
                     self.assertNotEqual(attr, [])
                 else:
@@ -259,20 +259,22 @@ class OCPGeneratorTestCase(TestCase):
                                     self.assertIsNotNone(row[col])
 
     def test_gen_namespaces_with_namespace(self):
-        """Test that gen_namespaces arranges the output dict in the expected way.
+        """Test that gen_namespaces returns (namespace, node) tuples.
 
         If namespaces are specified, namespaces are not generated.
         """
         in_nodes = self.attributes.get("nodes")
         generator = OCPGenerator(self.two_hours_ago, self.now, self.attributes)
         out_namespaces = generator._gen_namespaces(in_nodes)
-        self.assertEqual(list(out_namespaces.keys()), list(in_nodes[0].get("namespaces").keys()))
-        for value in out_namespaces.values():
-            with self.subTest(node=value):
-                self.assertEqual(list(value.get("namespaces").keys()), list(in_nodes[0].get("namespaces").keys()))
+        self.assertIsInstance(out_namespaces, list)
+        out_ns_names = [name for name, _ in out_namespaces]
+        self.assertEqual(out_ns_names, list(in_nodes[0].get("namespaces").keys()))
+        for _, node in out_namespaces:
+            with self.subTest(node=node):
+                self.assertEqual(list(node.get("namespaces").keys()), list(in_nodes[0].get("namespaces").keys()))
 
     def test_gen_namespaces_without_namespace(self):
-        """Test that gen_namespaces arranges the output dict in the expected way.
+        """Test that gen_namespaces returns (namespace, node) tuples.
 
         If no namespaces are specified, namespaces are generated.
         """
@@ -281,12 +283,109 @@ class OCPGeneratorTestCase(TestCase):
         generator = OCPGenerator(self.two_hours_ago, self.now, self.attributes)
         out_namespaces = generator._gen_namespaces(in_nodes)
 
-        # auto-generating namespaces should create at least 2 namespaces
-        self.assertGreater(len(list(out_namespaces.keys())), 1)
+        self.assertIsInstance(out_namespaces, list)
+        self.assertGreater(len(out_namespaces), 1)
 
-        for value in out_namespaces.values():
-            with self.subTest(namespace=value):
-                self.assertEqual(list(value.keys()), list(in_nodes[0].keys()))
+        for _, node in out_namespaces:
+            with self.subTest(node=node):
+                self.assertEqual(list(node.keys()), list(in_nodes[0].keys()))
+
+    def test_gen_namespaces_shared_across_nodes(self):
+        """Test that shared namespace names across nodes produce one entry per node.
+
+        When the same namespace (e.g. "shared-ns") is defined on multiple nodes,
+        _gen_namespaces must return one (namespace, node) tuple per occurrence so
+        that _gen_pods picks up pods from every node.  Before the fix, a dict
+        keyed by namespace name silently dropped all but the last node.
+
+        See https://github.com/pgarciaq/ros-ocp-backend/issues/254
+        """
+        attributes = {
+            "nodes": [
+                {
+                    "node": self.fake.uuid4(),
+                    "node_name": "node-alpha",
+                    "cpu_cores": 4,
+                    "memory_gig": 16,
+                    "namespaces": {
+                        "shared-ns": {
+                            "pods": [
+                                {
+                                    "pod": self.fake.uuid4(),
+                                    "pod_name": "pod-a1",
+                                    "cpu_request": 1,
+                                    "mem_request_gig": 2,
+                                    "cpu_limit": 2,
+                                    "mem_limit_gig": 4,
+                                },
+                            ],
+                        },
+                        "only-on-alpha": {
+                            "pods": [
+                                {
+                                    "pod": self.fake.uuid4(),
+                                    "pod_name": "pod-alpha-only",
+                                    "cpu_request": 1,
+                                    "mem_request_gig": 2,
+                                    "cpu_limit": 2,
+                                    "mem_limit_gig": 4,
+                                },
+                            ],
+                        },
+                    },
+                },
+                {
+                    "node": self.fake.uuid4(),
+                    "node_name": "node-beta",
+                    "cpu_cores": 8,
+                    "memory_gig": 32,
+                    "namespaces": {
+                        "shared-ns": {
+                            "pods": [
+                                {
+                                    "pod": self.fake.uuid4(),
+                                    "pod_name": "pod-b1",
+                                    "cpu_request": 1,
+                                    "mem_request_gig": 2,
+                                    "cpu_limit": 2,
+                                    "mem_limit_gig": 4,
+                                },
+                                {
+                                    "pod": self.fake.uuid4(),
+                                    "pod_name": "pod-b2",
+                                    "cpu_request": 1,
+                                    "mem_request_gig": 2,
+                                    "cpu_limit": 2,
+                                    "mem_limit_gig": 4,
+                                },
+                            ],
+                        },
+                    },
+                },
+            ],
+        }
+        generator = OCPGenerator(self.two_hours_ago, self.now, attributes)
+
+        # _gen_namespaces should return 3 tuples: (shared-ns, alpha),
+        # (only-on-alpha, alpha), (shared-ns, beta)
+        ns_tuples = generator.namespaces
+        self.assertEqual(len(ns_tuples), 3)
+        ns_names = [name for name, _ in ns_tuples]
+        self.assertEqual(ns_names.count("shared-ns"), 2, "shared-ns must appear once per node")
+
+        # _gen_pods must include all 3 pods (pod-a1 from alpha, pod-b1 and
+        # pod-b2 from beta) — the pre-fix code lost pod-a1.
+        pod_names = set(generator.pods.keys())
+        self.assertIn("pod-a1", pod_names, "pod from node-alpha's shared-ns must be present")
+        self.assertIn("pod-b1", pod_names, "pod from node-beta's shared-ns must be present")
+        self.assertIn("pod-b2", pod_names, "pod from node-beta's shared-ns must be present")
+        self.assertIn("pod-alpha-only", pod_names, "pod from only-on-alpha must be present")
+
+        # Verify node assignment: pod-a1 should be on node-alpha,
+        # pod-b1/pod-b2 should be on node-beta
+        self.assertEqual(generator.pods["pod-a1"]["node"], "node-alpha")
+        self.assertEqual(generator.pods["pod-b1"]["node"], "node-beta")
+        self.assertEqual(generator.pods["pod-b2"]["node"], "node-beta")
 
     def test_gen_nodes_with_nodes(self):
         """Test that gen_nodes arranges the output dict in the expected way.
