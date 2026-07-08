@@ -16,11 +16,11 @@
 #
 """Defines the abstract generator."""
 
+import copy
 import datetime
 import json
 import re
 from collections import defaultdict
-from copy import deepcopy
 from random import choice
 from random import choices
 from random import randint
@@ -1344,7 +1344,7 @@ class OCPGenerator(AbstractGenerator):
                             self.vm_pod_map[vm] = pod_name
                         if vm in vm_names:
                             continue
-                        pod_copy = deepcopy(specified_pod)
+                        pod_copy = copy.deepcopy(specified_pod)
                         pod_copy["vm_name"] = vm
                         if vm_seconds := pod_copy.get("pod_seconds"):
                             pod_copy["vm_seconds"] = vm_seconds
@@ -1667,7 +1667,7 @@ class OCPGenerator(AbstractGenerator):
         for namespace, vm_names in namespace2vm.items():
             for vm in vm_names:
                 node = vm_to_node[vm]
-                vm_copy = deepcopy(vms[vm])
+                vm_copy = copy.deepcopy(vms[vm])
                 if vm not in vms_defined_in_pod_labels or vm not in self.vm_pod_map:
                     # create pod corresponding to VM since it does not exist
                     vm_copy["pod_name"] = vm
@@ -1939,7 +1939,7 @@ class OCPGenerator(AbstractGenerator):
                     cpu_usage = self.pods[pod_name].get("cpu_usage", None)
                     mem_usage_gig = self.pods[pod_name].get("mem_usage_gig", None)
                     pod_seconds = self.pods[pod_name].get("pod_seconds", None)
-                    pod = deepcopy(self.pods[pod_name])
+                    pod = self.pods[pod_name].copy()
                     row = self._init_data_row(start, end, **kwargs)
                     row = self._update_data(
                         row,
@@ -1963,7 +1963,7 @@ class OCPGenerator(AbstractGenerator):
                 pod_keys = list(self.pods.keys())
                 for pod_choice in pod_choices:
                     pod_name = pod_keys[pod_choice]
-                    pod = deepcopy(self.pods[pod_name])
+                    pod = self.pods[pod_name].copy()
                     row = self._init_data_row(start, end, **kwargs)
                     yield self._update_data(row, start, end, pod=pod, **kwargs)
 
@@ -1979,7 +1979,7 @@ class OCPGenerator(AbstractGenerator):
                     mem_usage_gig = self.vms[vm_name].get("mem_usage_gig", None)
                     vm_seconds = self.vms[vm_name].get("vm_seconds", None)
                     vc_capacity = self.vms[vm_name].get("vc_capacity", None)
-                    vm = deepcopy(self.vms[vm_name])
+                    vm = self.vms[vm_name].copy()
                     row = self._init_data_row(start, end, **kwargs)
                     row = self._update_data(
                         row,
@@ -2005,7 +2005,7 @@ class OCPGenerator(AbstractGenerator):
                 vm_keys = list(self.vms.keys())
                 for vm_choice in vm_choices:
                     vm_name = vm_keys[vm_choice]
-                    vm = deepcopy(self.vms[vm_name])
+                    vm = self.vms[vm_name].copy()
                     vc_capacity = vm.get("vc_capacity", None)
                     row = self._init_data_row(start, end, **kwargs)
                     row = self._update_data(row, start, end, vm=vm, vc_capacity=vc_capacity, **kwargs)
@@ -2019,7 +2019,7 @@ class OCPGenerator(AbstractGenerator):
             end = quarter_hour.get("end")
             if self._nodes:
                 for pod_name, _ in self.pods.items():
-                    pod = deepcopy(self.ros_data[pod_name])
+                    pod = self.ros_data[pod_name].copy()
                     row = self._init_data_row(start, end, **kwargs)
                     yield self._update_data(row, start, end, pod=pod, **kwargs)
             else:
@@ -2030,7 +2030,7 @@ class OCPGenerator(AbstractGenerator):
                 pod_keys = list(self.pods.keys())
                 for pod_choice in pod_choices:
                     pod_name = pod_keys[pod_choice]
-                    pod = deepcopy(self.ros_data[pod_name])
+                    pod = self.ros_data[pod_name].copy()
                     row = self._init_data_row(start, end, **kwargs)
                     yield self._update_data(row, start, end, pod=pod, **kwargs)
 
