@@ -396,7 +396,16 @@ class OCPGeneratorTestCase(TestCase):
         generator = OCPGenerator(self.two_hours_ago, self.now, self.attributes)
         out_nodes = generator._gen_nodes()
         self.assertEqual(len(list(out_nodes)), len(list(in_nodes)))
-        expected_keys = ["name", "cpu_cores", "memory_bytes", "resource_id", "namespaces", "node_labels"]
+        expected_keys = [
+            "name",
+            "cpu_cores",
+            "memory_bytes",
+            "resource_id",
+            "namespaces",
+            "node_labels",
+            "machineset_name",
+            "node_capacity_pods",
+        ]
         self.assertEqual(list(out_nodes[0].keys()), expected_keys)
 
     def test_gen_nodes_without_nodes(self):
@@ -408,7 +417,15 @@ class OCPGeneratorTestCase(TestCase):
         out_nodes = generator._gen_nodes()
         self.assertGreaterEqual(len(list(out_nodes)), 2)
         self.assertLessEqual(len(list(out_nodes)), 6)
-        expected_keys = ["name", "cpu_cores", "memory_bytes", "resource_id", "node_labels"]
+        expected_keys = [
+            "name",
+            "cpu_cores",
+            "memory_bytes",
+            "resource_id",
+            "node_labels",
+            "machineset_name",
+            "node_capacity_pods",
+        ]
         self.assertEqual(list(out_nodes[0].keys()), expected_keys)
 
     def test_gen_openshift_labels(self):
@@ -1123,15 +1140,15 @@ class OCPGeneratorTestCase(TestCase):
 
     def test_ros_namespace_usage_columns_defined(self):
         """Test that ROS namespace usage columns are properly defined in the correct order."""
-        self.assertEqual(len(OCP_ROS_NAMESPACE_USAGE_COLUMN), 29)
+        self.assertEqual(len(OCP_ROS_NAMESPACE_USAGE_COLUMN), 36)
 
-        # Expected columns in the exact order specified in the original requirements
         expected_columns_in_order = (
             "report_period_start",
             "report_period_end",
             "interval_start",
             "interval_end",
             "namespace",
+            "quota_name",
             "cpu_request_namespace_sum",
             "cpu_request_namespace_used",
             "cpu_limit_namespace_sum",
@@ -1146,6 +1163,12 @@ class OCPGeneratorTestCase(TestCase):
             "memory_request_namespace_used",
             "memory_limit_namespace_sum",
             "memory_limit_namespace_used",
+            "storage_request_namespace_hard",
+            "storage_request_namespace_used",
+            "pods_namespace_hard",
+            "pods_namespace_used",
+            "object_count_namespace_hard",
+            "object_count_namespace_used",
             "memory_usage_namespace_avg",
             "memory_usage_namespace_max",
             "memory_usage_namespace_min",
@@ -1169,12 +1192,13 @@ class OCPGeneratorTestCase(TestCase):
         # Test 3: Verify specific column positions for key fields
         key_positions = {
             "namespace": 4,
-            "cpu_request_namespace_sum": 5,
-            "cpu_request_namespace_used": 6,
-            "memory_request_namespace_sum": 15,
-            "memory_request_namespace_used": 16,
-            "namespace_running_pods_max": 25,
-            "namespace_total_pods_avg": 28,
+            "quota_name": 5,
+            "cpu_request_namespace_sum": 6,
+            "cpu_request_namespace_used": 7,
+            "memory_request_namespace_sum": 16,
+            "memory_request_namespace_used": 17,
+            "namespace_running_pods_max": 32,
+            "namespace_total_pods_avg": 35,
         }
 
         for column_name, expected_position in key_positions.items():
