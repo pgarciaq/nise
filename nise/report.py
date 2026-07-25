@@ -87,9 +87,11 @@ from nise.generators.ocp import OCP_ROS_NAMESPACE_USAGE
 from nise.generators.ocp import OCP_ROS_CLUSTER_QUOTA
 from nise.generators.ocp import OCP_SNAPSHOT_INVENTORY
 from nise.generators.ocp import OCP_ROS_VM_GPU_DEVICE
+from nise.generators.ocp import OCP_ROS_VM_PVC
 from nise.generators.ocp import OCP_ROS_VM_USAGE
 from nise.generators.ocp.ocp_generator import OCP_ROS_VM_COLUMNS
 from nise.generators.ocp.ocp_generator import OCP_ROS_VM_GPU_DEVICE_COLUMNS
+from nise.generators.ocp.ocp_generator import OCP_ROS_VM_PVC_COLUMNS
 from nise.generators.ocp import OCPGenerator
 from nise.generators.ocp.ocp_vm_ros_generator import OCPVirtualMachineGenerator
 from nise.manifest import aws_generate_manifest
@@ -975,6 +977,7 @@ def ocp_create_report(options):  # noqa: C901
         if has_vm_generator and OCP_ROS_VM_USAGE not in report_types:
             report_types[OCP_ROS_VM_USAGE] = OCP_ROS_VM_COLUMNS
             report_types[OCP_ROS_VM_GPU_DEVICE] = OCP_ROS_VM_GPU_DEVICE_COLUMNS
+            report_types[OCP_ROS_VM_PVC] = OCP_ROS_VM_PVC_COLUMNS
 
         data = {rt: [] for rt in report_types}
         file_numbers = {rt: 0 for rt in report_types}
@@ -1039,6 +1042,7 @@ def ocp_create_report(options):  # noqa: C901
                 OCP_ROS_CLUSTER_QUOTA,
                 OCP_ROS_VM_USAGE,
                 OCP_ROS_VM_GPU_DEVICE,
+                OCP_ROS_VM_PVC,
                 OCP_SNAPSHOT_INVENTORY,
             ):
                 monthly_ros_files.append(month_output_file)

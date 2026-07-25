@@ -26,6 +26,8 @@ from unittest import TestCase
 from nise.generators.ocp.ocp_generator import OCP_ROS_VM_COLUMNS
 from nise.generators.ocp.ocp_generator import OCP_ROS_VM_GPU_DEVICE
 from nise.generators.ocp.ocp_generator import OCP_ROS_VM_GPU_DEVICE_COLUMNS
+from nise.generators.ocp.ocp_generator import OCP_ROS_VM_PVC
+from nise.generators.ocp.ocp_generator import OCP_ROS_VM_PVC_COLUMNS
 from nise.generators.ocp.ocp_generator import OCP_ROS_VM_USAGE
 from nise.generators.ocp.ocp_vm_ros_generator import OCPVirtualMachineGenerator
 from nise.report import _ensure_vm_ros_generator
@@ -613,6 +615,96 @@ class OCPVirtualMachineGeneratorTestCase(TestCase):
         self.assertEqual(int(row["net_rx_bytes_per_sec"]), 3_000_000_000)
         self.assertEqual(int(row["net_rx_drops_per_sec"]), 12_000)
 
+    def test_pvc_csv_generation(self):
+        """pvc_devices in YAML produces ocp_ros_vm_pvc rows with expected columns."""
+        attributes = {
+            "vms": [
+                {
+                    "vm_name": "db-vm-01",
+                    "namespace": "ha-cluster",
+                    "node_name": "worker-1",
+                    "guest_os": "linux",
+                    "guest_agent": True,
+                    "vcpu": 4,
+                    "memory_gib": 8,
+                    "disk_gib": 100,
+                    "pvc_devices": [
+                        {"name": "shared-data-pvc", "capacity_gib": 100, "volume_mode": "Filesystem"},
+                        {"name": "logs-primary", "capacity_gib": 50, "volume_mode": "Filesystem"},
+                    ],
+                }
+            ]
+        }
+        generator = OCPVirtualMachineGenerator(self.start, self.end, attributes)
+        rows = list(generator.generate_data(OCP_ROS_VM_PVC))
+        self.assertEqual(len(rows), 2 * 96 * 2)
+        self.assertEqual(set(rows[0].keys()), set(OCP_ROS_VM_PVC_COLUMNS))
+        self.assertEqual(rows[0]["vm_name"], "db-vm-01")
+        self.assertEqual(rows[0]["namespace"], "ha-cluster")
+        self.assertEqual(rows[0]["node_name"], "worker-1")
+        self.assertIn(rows[0]["pvc_name"], ("shared-data-pvc", "logs-primary"))
+
+    def test_pvc_csv_capacity_bytes(self):
+        """disk_capacity_bytes is correctly converted from capacity_gib."""
+        attributes = {
+            "vms": [
+                {
+                    "vm_name": "pvc-vm",
+                    "namespace": "default",
+                    "node_name": "worker-1",
+                    "vcpu": 2,
+                    "memory_gib": 4,
+                    "disk_gib": 50,
+                    "pvc_devices": [
+                        {"name": "data-pvc", "capacity_gib": 100, "volume_mode": "Block"},
+                    ],
+                }
+            ]
+        }
+        generator = OCPVirtualMachineGenerator(self.start, self.end, attributes)
+        row = next(generator.generate_data(OCP_ROS_VM_PVC))
+        self.assertEqual(int(row["disk_capacity_bytes"]), 100 * 1024 * 1024 * 1024)
+        self.assertEqual(row["volume_mode"], "Block")
+
+    def test_pvc_csv_no_pvc_devices(self):
+        """VMs without pvc_devices produce no PVC CSV rows."""
+        attributes = {
+            "vms": [
+                {
+                    "vm_name": "no-pvc-vm",
+                    "namespace": "default",
+                    "node_name": "worker-1",
+                    "vcpu": 2,
+                    "memory_gib": 4,
+                    "disk_gib": 50,
+                }
+            ]
+        }
+        generator = OCPVirtualMachineGenerator(self.start, self.end, attributes)
+        rows = list(generator.generate_data(OCP_ROS_VM_PVC))
+        self.assertEqual(rows, [])
+
+    def test_pvc_csv_default_volume_mode(self):
+        """PVC devices without volume_mode default to Filesystem."""
+        attributes = {
+            "vms": [
+                {
+                    "vm_name": "default-mode-vm",
+                    "namespace": "default",
+                    "node_name": "worker-1",
+                    "vcpu": 2,
+                    "memory_gib": 4,
+                    "disk_gib": 50,
+                    "pvc_devices": [
+                        {"name": "data-pvc", "capacity_gib": 10},
+                    ],
+                }
+            ]
+        }
+        generator = OCPVirtualMachineGenerator(self.start, self.end, attributes)
+        row = next(generator.generate_data(OCP_ROS_VM_PVC))
+        self.assertEqual(row["volume_mode"], "Filesystem")
+
 
 class OCPVMReportIntegrationTestCase(TestCase):
     """Integration test writing ocp_ros_vm_usage.csv via ocp_create_report."""
@@ -662,5 +754,100 @@ class OCPVMReportIntegrationTestCase(TestCase):
                     rows = list(reader)
                 self.assertEqual(len(rows), 96)
                 self.assertEqual(rows[0]["vm_name"], "test-vm")
+            finally:
+                os.chdir(prev_cwd)
+
+    def test_ocp_create_report_writes_vm_pvc_csv(self):
+        """ocp_create_report produces ocp_ros_vm_pvc.csv when VMs have pvc_devices."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            prev_cwd = os.getcwd()
+            os.chdir(tmpdir)
+            try:
+                options = {
+                    "start_date": datetime.datetime(2026, 5, 1, tzinfo=datetime.UTC),
+                    "end_date": datetime.datetime(2026, 5, 2, tzinfo=datetime.UTC),
+                    "ocp_cluster_id": "test-cluster-pvc",
+                    "ros_ocp_info": True,
+                    "static_report_data": {
+                        "generators": [
+                            {
+                                "OCPVirtualMachineGenerator": {
+                                    "start_date": "2026-05-01",
+                                    "end_date": "2026-05-02",
+                                    "vms": [
+                                        {
+                                            "vm_name": "pvc-test-vm",
+                                            "namespace": "default",
+                                            "node_name": "node-1",
+                                            "guest_os": "linux",
+                                            "guest_agent": True,
+                                            "vcpu": 2,
+                                            "memory_gib": 4,
+                                            "disk_gib": 20,
+                                            "pvc_devices": [
+                                                {"name": "shared-pvc", "capacity_gib": 50, "volume_mode": "Filesystem"},
+                                            ],
+                                        }
+                                    ],
+                                }
+                            }
+                        ]
+                    },
+                    "row_limit": 100000,
+                    "write_monthly": True,
+                }
+                ocp_create_report(options)
+                pvc_matches = [f for f in os.listdir(tmpdir) if "ocp_ros_vm_pvc" in f]
+                self.assertEqual(len(pvc_matches), 1)
+                with open(pvc_matches[0], newline="") as handle:
+                    reader = csv.DictReader(handle)
+                    self.assertEqual(reader.fieldnames, list(OCP_ROS_VM_PVC_COLUMNS))
+                    rows = list(reader)
+                self.assertEqual(len(rows), 96)
+                self.assertEqual(rows[0]["vm_name"], "pvc-test-vm")
+                self.assertEqual(rows[0]["pvc_name"], "shared-pvc")
+                self.assertEqual(int(rows[0]["disk_capacity_bytes"]), 50 * 1024 * 1024 * 1024)
+            finally:
+                os.chdir(prev_cwd)
+
+    def test_ocp_create_report_no_pvc_csv_without_devices(self):
+        """ocp_create_report does NOT produce ocp_ros_vm_pvc.csv when VMs lack pvc_devices."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            prev_cwd = os.getcwd()
+            os.chdir(tmpdir)
+            try:
+                options = {
+                    "start_date": datetime.datetime(2026, 5, 1, tzinfo=datetime.UTC),
+                    "end_date": datetime.datetime(2026, 5, 2, tzinfo=datetime.UTC),
+                    "ocp_cluster_id": "test-cluster-nopvc",
+                    "ros_ocp_info": True,
+                    "static_report_data": {
+                        "generators": [
+                            {
+                                "OCPVirtualMachineGenerator": {
+                                    "start_date": "2026-05-01",
+                                    "end_date": "2026-05-02",
+                                    "vms": [
+                                        {
+                                            "vm_name": "test-vm",
+                                            "namespace": "default",
+                                            "node_name": "node-1",
+                                            "guest_os": "linux",
+                                            "guest_agent": True,
+                                            "vcpu": 2,
+                                            "memory_gib": 4,
+                                            "disk_gib": 20,
+                                        }
+                                    ],
+                                }
+                            }
+                        ]
+                    },
+                    "row_limit": 100000,
+                    "write_monthly": True,
+                }
+                ocp_create_report(options)
+                pvc_matches = [f for f in os.listdir(tmpdir) if "ocp_ros_vm_pvc" in f]
+                self.assertEqual(len(pvc_matches), 0)
             finally:
                 os.chdir(prev_cwd)

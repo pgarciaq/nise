@@ -25,6 +25,8 @@ from nise.generators.generator import REPORT_TYPE
 from nise.generators.ocp.ocp_generator import OCP_ROS_VM_COLUMNS
 from nise.generators.ocp.ocp_generator import OCP_ROS_VM_GPU_DEVICE
 from nise.generators.ocp.ocp_generator import OCP_ROS_VM_GPU_DEVICE_COLUMNS
+from nise.generators.ocp.ocp_generator import OCP_ROS_VM_PVC
+from nise.generators.ocp.ocp_generator import OCP_ROS_VM_PVC_COLUMNS
 from nise.generators.ocp.ocp_generator import OCP_ROS_VM_USAGE
 from nise.generators.ocp.ocp_generator import OCPGenerator
 
@@ -115,6 +117,10 @@ class OCPVirtualMachineGenerator(AbstractGenerator):
             OCP_ROS_VM_GPU_DEVICE: {
                 "_generate_hourly_data": self._gen_quarter_hourly_vm_gpu_device,
                 "_update_data": self._update_vm_gpu_device_data,
+            },
+            OCP_ROS_VM_PVC: {
+                "_generate_hourly_data": self._gen_quarter_hourly_vm_pvc,
+                "_update_data": self._update_vm_pvc_data,
             },
         }
 
@@ -457,6 +463,39 @@ class OCPVirtualMachineGenerator(AbstractGenerator):
                 row = self._init_data_row(start, end, **kwargs)
                 row = self._add_common_usage_info(row, start, end, **kwargs)
                 yield self._update_vm_ros_data(row, start, end, vm=vm, **kwargs)
+
+    def _init_pvc_row(self, start, end, **kwargs):
+        del start, end, kwargs
+        return {column: "" for column in OCP_ROS_VM_PVC_COLUMNS}
+
+    def _update_vm_pvc_data(self, row, start, end, **kwargs):
+        """Populate a single PVC attachment row."""
+        del end
+        vm = kwargs.get("vm")
+        pvc_device = kwargs.get("pvc_device")
+        row["interval_start"] = OCPGenerator.timestamp(start)
+        row["interval_end"] = OCPGenerator.timestamp(start + datetime.timedelta(minutes=15))
+        row["vm_name"] = vm.get("vm_name", "")
+        row["namespace"] = vm.get("namespace", "")
+        row["node_name"] = vm.get("node_name", "")
+        row["pvc_name"] = pvc_device.get("name", "")
+        capacity_gib = float(pvc_device.get("capacity_gib", 50))
+        row["disk_capacity_bytes"] = int(capacity_gib * GIGABYTE)
+        row["volume_mode"] = pvc_device.get("volume_mode", "Filesystem")
+        return row
+
+    def _gen_quarter_hourly_vm_pvc(self, **kwargs):
+        """Emit one row per PVC device per 15-minute interval."""
+        for quarter_hour in self.quarter_hours:
+            start = quarter_hour.get("start")
+            end = quarter_hour.get("end")
+            for vm in self._vms:
+                pvc_devices = vm.get("pvc_devices")
+                if not pvc_devices:
+                    continue
+                for pvc_device in pvc_devices:
+                    row = self._init_pvc_row(start, end, **kwargs)
+                    yield self._update_vm_pvc_data(row, start, end, vm=vm, pvc_device=pvc_device, **kwargs)
 
     def _generate_hourly_data(self, **kwargs):
         """Dispatch to the configured report generator method."""

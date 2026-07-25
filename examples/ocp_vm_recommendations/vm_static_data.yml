@@ -19,7 +19,7 @@
 #   - NUMA 63: set placement.numa_node_memory_gib (e.g. 64) when guest memory_gib > cap.
 #   - Savings on 64: Koku cost rates + ROS_SAVINGS_ESTIMATES_ENABLED.
 #   - Code 45 (insufficient data): ingest < 24h or use a short date range fixture.
-#   - Code 62 (shared PVC): profile peers work today; true PVC name needs operator CSV column.
+#   - Code 62 (shared PVC): uses pvc_devices for PVC-name overlap (operator companion CSV).
 #   - Node allocatable memory (512 GiB host) is not emitted by nise; use ROS settings/digests.
 #
 # Date span: 35 days (power-off 64, storage tiering 67–69, multi-day thresholds).
@@ -465,7 +465,7 @@ generators:
             cpu_pct: 0.15
             mem_pct: 0.30
 
-        # --- 62 VM_SHARED_STORAGE (correlated profile peers in ha-cluster namespace) ---
+        # --- 62 VM_SHARED_STORAGE (PVC-name overlap in ha-cluster namespace) ---
 
         - vm_name: ha-primary-vm-01
           namespace: ha-cluster
@@ -478,6 +478,13 @@ generators:
           fixed_usage:
             cpu_pct: 0.40
             mem_pct: 0.55
+          pvc_devices:
+            - name: "shared-data-pvc"
+              capacity_gib: 100
+              volume_mode: "Filesystem"
+            - name: "logs-primary"
+              capacity_gib: 50
+              volume_mode: "Filesystem"
         - vm_name: ha-standby-vm-01
           namespace: ha-cluster
           node_name: worker-1
@@ -489,6 +496,13 @@ generators:
           fixed_usage:
             cpu_pct: 0.38
             mem_pct: 0.52
+          pvc_devices:
+            - name: "shared-data-pvc"
+              capacity_gib: 100
+              volume_mode: "Filesystem"
+            - name: "logs-standby"
+              capacity_gib: 50
+              volume_mode: "Filesystem"
 
         # --- Supplemental (guest agent lifecycle, Windows kernel reserve pair) ---
 

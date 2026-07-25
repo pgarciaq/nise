@@ -27,6 +27,7 @@ from nise.generators.ocp.ocp_generator import OCP_ROS_USAGE  # noqa: F401
 from nise.generators.ocp.ocp_generator import OCP_ROS_NAMESPACE_USAGE  # noqa: F401
 from nise.generators.ocp.ocp_generator import OCP_ROS_CLUSTER_QUOTA  # noqa: F401
 from nise.generators.ocp.ocp_generator import OCP_ROS_VM_GPU_DEVICE  # noqa: F401
+from nise.generators.ocp.ocp_generator import OCP_ROS_VM_PVC  # noqa: F401
 from nise.generators.ocp.ocp_generator import OCP_ROS_VM_USAGE  # noqa: F401
 from nise.generators.ocp.ocp_generator import OCP_SNAPSHOT_INVENTORY  # noqa: F401
 from nise.generators.ocp.ocp_vm_ros_generator import OCPVirtualMachineGenerator  # noqa: F401
