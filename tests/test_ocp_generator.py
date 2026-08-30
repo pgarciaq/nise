@@ -55,6 +55,7 @@ from nise.generators.ocp.ocp_generator import OCPGenerator
 from nise.generators.ocp.ocp_generator import _gen_ros_gpu_metrics
 from nise.generators.ocp.ocp_generator import machineset_name_from_node
 from nise.generators.ocp.ocp_generator import node_capacity_pods_for_node
+from nise.generators.ocp.ocp_generator import ros_node_metadata
 
 MAX_VOL_GIGS = 100
 
@@ -405,6 +406,9 @@ class OCPGeneratorTestCase(TestCase):
             "node_labels",
             "machineset_name",
             "node_capacity_pods",
+            "node_allocatable_cpu_cores",
+            "node_allocatable_memory_bytes",
+            "instance_type",
         ]
         self.assertEqual(list(out_nodes[0].keys()), expected_keys)
 
@@ -425,6 +429,9 @@ class OCPGeneratorTestCase(TestCase):
             "node_labels",
             "machineset_name",
             "node_capacity_pods",
+            "node_allocatable_cpu_cores",
+            "node_allocatable_memory_bytes",
+            "instance_type",
         ]
         self.assertEqual(list(out_nodes[0].keys()), expected_keys)
 
@@ -1938,6 +1945,53 @@ class OCPGeneratorTestCase(TestCase):
         self.assertEqual(OCP_ROS_USAGE_COLUMN[mem_idx + 1], "node_capacity_pods")
         self.assertEqual(OCP_ROS_USAGE_COLUMN[mem_idx + 2], "machineset_name")
 
+    def test_ros_usage_column_header_parity_inserts(self):
+        """Operator-aligned optional columns exist without reordering the existing header."""
+        for col in (
+            "node_allocatable_cpu_cores",
+            "node_allocatable_memory_bytes",
+            "node_allocatable_gpu_count",
+            "instance_type",
+            "cpu_throttle_container_min",
+            "gpu_uuid",
+        ):
+            self.assertIn(col, OCP_ROS_USAGE_COLUMN)
+        ms_idx = OCP_ROS_USAGE_COLUMN.index("machineset_name")
+        self.assertEqual(OCP_ROS_USAGE_COLUMN[ms_idx + 1], "node_allocatable_cpu_cores")
+        self.assertEqual(OCP_ROS_USAGE_COLUMN[ms_idx + 2], "node_allocatable_memory_bytes")
+        self.assertEqual(OCP_ROS_USAGE_COLUMN[ms_idx + 3], "node_allocatable_gpu_count")
+        self.assertEqual(OCP_ROS_USAGE_COLUMN[ms_idx + 4], "instance_type")
+        max_idx = OCP_ROS_USAGE_COLUMN.index("cpu_throttle_container_max")
+        self.assertEqual(OCP_ROS_USAGE_COLUMN[max_idx + 1], "cpu_throttle_container_min")
+        self.assertEqual(OCP_ROS_USAGE_COLUMN[max_idx + 2], "cpu_throttle_container_sum")
+        profile_idx = OCP_ROS_USAGE_COLUMN.index("accelerator_profile_name")
+        self.assertEqual(OCP_ROS_USAGE_COLUMN[profile_idx + 1], "gpu_uuid")
+
+    def test_ros_node_metadata_allocatable_defaults_to_capacity(self):
+        """Missing allocatable YAML fields default to capacity, not the 0.93 digest fallback."""
+        meta = ros_node_metadata({"name": "worker-0", "cpu_cores": 8, "memory_bytes": 16 * GIGABYTE})
+        self.assertEqual(meta["node_allocatable_cpu_cores"], 8)
+        self.assertEqual(meta["node_allocatable_memory_bytes"], 16 * GIGABYTE)
+        self.assertEqual(meta["instance_type"], "")
+        self.assertEqual(meta["machineset_name"], "worker")
+
+    def test_ros_node_metadata_yaml_overrides(self):
+        """Optional node YAML supplies instance_type and allocatable without using VM instance_type."""
+        meta = ros_node_metadata(
+            {
+                "name": "gpu-worker-1",
+                "cpu_cores": 16,
+                "memory_bytes": 64 * GIGABYTE,
+                "node_allocatable_cpu_cores": 15.5,
+                "node_allocatable_memory_bytes": 60 * GIGABYTE,
+                "instance_type": "g4dn.xlarge",
+            }
+        )
+        self.assertEqual(meta["node_allocatable_cpu_cores"], 15.5)
+        self.assertEqual(meta["node_allocatable_memory_bytes"], 60 * GIGABYTE)
+        self.assertEqual(meta["instance_type"], "g4dn.xlarge")
+        self.assertNotIn("node_allocatable_gpu_count", meta)
+
     def test_machineset_name_from_node(self):
         """MachineSet name is derived from node hostname prefix."""
         self.assertEqual(machineset_name_from_node("worker-0"), "worker")
@@ -1956,6 +2010,11 @@ class OCPGeneratorTestCase(TestCase):
             self.assertIn("machineset_name", pod_data)
             self.assertIn("node_capacity_pods", pod_data)
             self.assertGreater(pod_data["node_capacity_pods"], 0)
+            self.assertEqual(pod_data["node_allocatable_cpu_cores"], pod_data["node_capacity_cpu_cores"])
+            self.assertEqual(pod_data["node_allocatable_memory_bytes"], pod_data["node_capacity_memory_bytes"])
+            self.assertEqual(pod_data["instance_type"], "")
+            self.assertEqual(pod_data["cpu_throttle_container_min"], pod_data["cpu_throttle_container_avg"])
+            self.assertEqual(pod_data["cpu_throttle_container_min"], pod_data["cpu_throttle_container_max"])
 
     def test_ros_data_contains_oom_count(self):
         """Test that generated ROS pod data includes oom_count with valid values."""
@@ -2097,10 +2156,11 @@ class OCPGeneratorTestCase(TestCase):
         self.assertTrue(found, "api-server pod not found in ros_data")
 
     def test_ros_usage_column_includes_gpu_columns(self):
-        """Test that OCP_ROS_USAGE_COLUMN includes all 14 GPU profiling columns."""
+        """Test that OCP_ROS_USAGE_COLUMN includes GPU identity and profiling columns."""
         gpu_columns = [
             "accelerator_model_name",
             "accelerator_profile_name",
+            "gpu_uuid",
             "accelerator_frame_buffer_usage_min",
             "accelerator_frame_buffer_usage_max",
             "accelerator_frame_buffer_usage_avg",
@@ -2158,6 +2218,9 @@ class OCPGeneratorTestCase(TestCase):
             if pod_data.get("pod") == "training-pod":
                 found = True
                 self.assertEqual(pod_data["accelerator_model_name"], "A100")
+                expected_uuid = f"GPU-{uuid5(NAMESPACE_DNS, 'nise.ocp.gpu.gpu-node.training-pod.0')}"
+                self.assertEqual(pod_data["gpu_uuid"], expected_uuid)
+                self.assertEqual(pod_data["node_allocatable_gpu_count"], 1)
                 self.assertIsInstance(pod_data["accelerator_frame_buffer_usage_avg"], float)
                 self.assertGreater(pod_data["accelerator_frame_buffer_usage_avg"], 0)
                 self.assertIsInstance(pod_data["tensor_pipe_active_avg"], float)
@@ -2199,9 +2262,97 @@ class OCPGeneratorTestCase(TestCase):
                 found = True
                 self.assertEqual(pod_data["accelerator_model_name"], "")
                 self.assertEqual(pod_data["accelerator_profile_name"], "")
+                self.assertEqual(pod_data["gpu_uuid"], "")
+                self.assertEqual(pod_data["node_allocatable_gpu_count"], 0)
                 self.assertEqual(pod_data["tensor_pipe_active_avg"], "")
                 self.assertEqual(pod_data["accelerator_frame_buffer_usage_avg"], "")
         self.assertTrue(found, "web-server not found in ros_data")
+
+    def test_ros_data_yaml_allocatable_and_instance_type(self):
+        """YAML node allocatable and instance_type flow onto ROS container rows."""
+        attributes = {
+            "nodes": [
+                {
+                    "node_name": "worker-0",
+                    "cpu_cores": 8,
+                    "memory_gig": 32,
+                    "node_allocatable_cpu_cores": 7.5,
+                    "node_allocatable_memory_bytes": 30 * GIGABYTE,
+                    "instance_type": "m5.2xlarge",
+                    "namespaces": {
+                        "app-ns": {
+                            "pods": [
+                                {
+                                    "pod_name": "api",
+                                    "cpu_request": 1,
+                                    "mem_request_gig": 2,
+                                    "cpu_limit": 2,
+                                    "mem_limit_gig": 4,
+                                }
+                            ]
+                        }
+                    },
+                }
+            ]
+        }
+        generator = OCPGenerator(self.two_hours_ago, self.now, attributes, ros_ocp_info=True)
+        pod_data = generator.ros_data["api"]
+        self.assertEqual(pod_data["node_allocatable_cpu_cores"], 7.5)
+        self.assertEqual(pod_data["node_allocatable_memory_bytes"], 30 * GIGABYTE)
+        self.assertEqual(pod_data["instance_type"], "m5.2xlarge")
+        self.assertEqual(pod_data["node_capacity_cpu_cores"], 8)
+
+    def test_ros_data_first_gpu_uuid_does_not_explode_rows(self):
+        """Two GPUs on a pod still produce one ROS row with the first UUID."""
+        attributes = {
+            "nodes": [
+                {
+                    "node_name": "gpu-node",
+                    "cpu_cores": 16,
+                    "memory_gig": 64,
+                    "namespaces": {
+                        "ml-ns": {
+                            "pods": [
+                                {
+                                    "pod_name": "multi-gpu-pod",
+                                    "cpu_request": 4,
+                                    "mem_request_gig": 16,
+                                    "cpu_limit": 8,
+                                    "mem_limit_gig": 32,
+                                    "gpus": [
+                                        {"gpu_model": "A100", "gpu_memory_capacity_mib": 40960},
+                                        {"gpu_model": "A100", "gpu_memory_capacity_mib": 40960},
+                                    ],
+                                },
+                                {
+                                    "pod_name": "cpu-sidecar",
+                                    "cpu_request": 1,
+                                    "mem_request_gig": 2,
+                                    "cpu_limit": 2,
+                                    "mem_limit_gig": 4,
+                                },
+                            ]
+                        }
+                    },
+                }
+            ]
+        }
+        generator = OCPGenerator(self.two_hours_ago, self.now, attributes, ros_ocp_info=True)
+        gpu_rows = [p for p in generator.ros_data.values() if p.get("pod") == "multi-gpu-pod"]
+        self.assertEqual(len(gpu_rows), 1)
+        first_uuid = f"GPU-{uuid5(NAMESPACE_DNS, 'nise.ocp.gpu.gpu-node.multi-gpu-pod.0')}"
+        second_uuid = f"GPU-{uuid5(NAMESPACE_DNS, 'nise.ocp.gpu.gpu-node.multi-gpu-pod.1')}"
+        self.assertEqual(len(generator.gpus["multi-gpu-pod"]), 2)
+        self.assertEqual(gpu_rows[0]["gpu_uuid"], first_uuid)
+        self.assertNotEqual(gpu_rows[0]["gpu_uuid"], second_uuid)
+        self.assertEqual(gpu_rows[0]["node_allocatable_gpu_count"], 2)
+        sidecar = generator.ros_data["cpu-sidecar"]
+        self.assertEqual(sidecar["gpu_uuid"], "")
+        self.assertEqual(sidecar["node_allocatable_gpu_count"], 2)
+        ros_csv = list(generator.generate_data(OCP_ROS_USAGE))
+        multi_rows = [r for r in ros_csv if r.get("pod") == "multi-gpu-pod"]
+        self.assertGreater(len(multi_rows), 0)
+        self.assertEqual({r["gpu_uuid"] for r in multi_rows}, {first_uuid})
 
     def test_ros_data_tier2_gpu_no_profiling_metrics(self):
         """Test that Tier 2 GPUs (V100) have FB usage but empty PROF_ metrics."""

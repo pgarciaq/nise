@@ -228,6 +228,10 @@ OCP_ROS_USAGE_COLUMN = (
     "node_capacity_memory_bytes",
     "node_capacity_pods",
     "machineset_name",
+    "node_allocatable_cpu_cores",
+    "node_allocatable_memory_bytes",
+    "node_allocatable_gpu_count",
+    "instance_type",
     "pod",
     "container_name",
     "owner_name",
@@ -245,6 +249,7 @@ OCP_ROS_USAGE_COLUMN = (
     "cpu_usage_container_sum",
     "cpu_throttle_container_avg",
     "cpu_throttle_container_max",
+    "cpu_throttle_container_min",
     "cpu_throttle_container_sum",
     "memory_request_container_avg",
     "memory_request_container_sum",
@@ -264,6 +269,7 @@ OCP_ROS_USAGE_COLUMN = (
     "available_replicas",
     "accelerator_model_name",
     "accelerator_profile_name",
+    "gpu_uuid",
     "accelerator_frame_buffer_usage_min",
     "accelerator_frame_buffer_usage_max",
     "accelerator_frame_buffer_usage_avg",
@@ -603,6 +609,7 @@ def _gen_ros_gpu_metrics(gpu_model, gpu_memory_mib, mig_profile=None, overrides=
 _EMPTY_GPU_METRICS = {
     "accelerator_model_name": "",
     "accelerator_profile_name": "",
+    "gpu_uuid": "",
     "accelerator_frame_buffer_usage_min": "",
     "accelerator_frame_buffer_usage_max": "",
     "accelerator_frame_buffer_usage_avg": "",
@@ -928,13 +935,34 @@ def node_capacity_pods_for_node(cpu_cores, memory_bytes):
 
 
 def ros_node_metadata(node):
-    """MachineSet and pod capacity fields for ROS container CSV rows."""
+    """MachineSet, allocatable, and pod capacity fields for ROS container CSV rows.
+
+    Allocatable CPU/memory default to capacity when YAML omits them. That skips
+    the ROS digest fallback (missing/0 allocatable → capacity * 0.93).
+    instance_type is optional node YAML; it is not the VM instance_type.
+    node_allocatable_gpu_count is set later in _enrich_ros_data_with_gpus.
+    """
     name = node.get("name") or ""
     cpu_cores = node.get("cpu_cores")
     memory_bytes = node.get("memory_bytes")
+    allocatable_cpu = node.get("node_allocatable_cpu_cores")
+    if allocatable_cpu is None:
+        allocatable_cpu = node.get("cpu_allocatable")
+    if allocatable_cpu is None:
+        allocatable_cpu = cpu_cores
+    allocatable_mem = node.get("node_allocatable_memory_bytes")
+    if allocatable_mem is None:
+        allocatable_mem = node.get("memory_allocatable_bytes")
+    if allocatable_mem is None:
+        allocatable_mem = node.get("memory_allocatable")
+    if allocatable_mem is None:
+        allocatable_mem = memory_bytes
     return {
         "machineset_name": node.get("machineset_name") or machineset_name_from_node(name),
         "node_capacity_pods": node.get("node_capacity_pods") or node_capacity_pods_for_node(cpu_cores, memory_bytes),
+        "node_allocatable_cpu_cores": allocatable_cpu,
+        "node_allocatable_memory_bytes": allocatable_mem,
+        "instance_type": node.get("instance_type") or "",
     }
 
 
@@ -1095,6 +1123,12 @@ class OCPGenerator(AbstractGenerator):
                     "machineset_name": item.get("machineset_name") or machineset_name_from_node(node_name),
                     "node_capacity_pods": item.get("node_capacity_pods")
                     or node_capacity_pods_for_node(cpu_cores, memory_bytes),
+                    "node_allocatable_cpu_cores": item.get("node_allocatable_cpu_cores", item.get("cpu_allocatable")),
+                    "node_allocatable_memory_bytes": item.get(
+                        "node_allocatable_memory_bytes",
+                        item.get("memory_allocatable_bytes", item.get("memory_allocatable")),
+                    ),
+                    "instance_type": item.get("instance_type") or "",
                 }
                 nodes.append(node)
         else:
@@ -1305,6 +1339,7 @@ class OCPGenerator(AbstractGenerator):
             "cpu_usage_container_sum": cpu_usage_avg,
             "cpu_throttle_container_avg": cpu_throttle,
             "cpu_throttle_container_max": cpu_throttle,
+            "cpu_throttle_container_min": cpu_throttle,
             "cpu_throttle_container_sum": cpu_throttle,
             "memory_request_container_avg": round(mem_request_gig * GIGABYTE),
             "memory_request_container_sum": round(mem_request_gig * GIGABYTE),
@@ -1425,6 +1460,7 @@ class OCPGenerator(AbstractGenerator):
                         "cpu_usage_container_sum": cpu_usage_avg,
                         "cpu_throttle_container_avg": cpu_throttle,
                         "cpu_throttle_container_max": cpu_throttle,
+                        "cpu_throttle_container_min": cpu_throttle,
                         "cpu_throttle_container_sum": cpu_throttle,
                         "memory_request_container_avg": round(mem_request_gig * GIGABYTE),
                         "memory_request_container_sum": round(mem_request_gig * GIGABYTE),
@@ -1843,6 +1879,7 @@ class OCPGenerator(AbstractGenerator):
             "cpu_usage_container_sum",
             "cpu_throttle_container_avg",
             "cpu_throttle_container_max",
+            "cpu_throttle_container_min",
             "cpu_throttle_container_sum",
             "memory_usage_container_avg",
             "memory_usage_container_min",
@@ -2406,14 +2443,33 @@ class OCPGenerator(AbstractGenerator):
 
         return gpus
 
+    def _node_allocatable_gpu_counts(self):
+        """Distinct GPU UUIDs per node. Nodes with no GPUs are omitted (count 0)."""
+        uuids_by_node = defaultdict(set)
+        for pod_name, pod_gpus in self.gpus.items():
+            pod = self.pods.get(pod_name)
+            if not pod:
+                continue
+            node_name = pod.get("node")
+            if not node_name:
+                continue
+            for gpu in pod_gpus:
+                uuid = gpu.get("gpu_uuid")
+                if uuid:
+                    uuids_by_node[node_name].add(uuid)
+        return {node_name: len(uuids) for node_name, uuids in uuids_by_node.items()}
+
     def _enrich_ros_data_with_gpus(self):
         """Add GPU profiling metrics to ROS pod data for pods that have GPUs.
 
-        Uses the first GPU attached to each pod (the operator reports one
-        row per container, not per GPU, so we pick the primary GPU).
-        Pods without GPUs get empty GPU columns.
+        One ROS row per container: DCGM metrics and gpu_uuid come from the
+        first GPU on that pod. Pods without GPUs get empty GPU columns.
+        node_allocatable_gpu_count is the distinct GPU UUID count on that
+        node (0 if none).
         """
+        gpu_counts = self._node_allocatable_gpu_counts()
         for pod_name, ros_pod in self.ros_data.items():
+            ros_pod["node_allocatable_gpu_count"] = gpu_counts.get(ros_pod.get("node"), 0)
             pod_gpus = self.gpus.get(pod_name)
             if pod_gpus:
                 gpu = pod_gpus[0]
@@ -2422,6 +2478,7 @@ class OCPGenerator(AbstractGenerator):
                 mig_profile = gpu.get("mig_profile")
                 overrides = gpu.get("metric_overrides")
                 ros_pod.update(_gen_ros_gpu_metrics(gpu_model, gpu_memory, mig_profile, overrides))
+                ros_pod["gpu_uuid"] = gpu.get("gpu_uuid") or ""
             else:
                 ros_pod.update(_EMPTY_GPU_METRICS)
 

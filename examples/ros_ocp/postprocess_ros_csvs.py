@@ -207,6 +207,7 @@ def process_row(row: dict, scenario: str) -> dict:
     row["cpu_usage_container_sum"] = f(cpu_use_avg)
     row["cpu_throttle_container_avg"] = f(cpu_throttle_avg)
     row["cpu_throttle_container_max"] = f(cpu_throttle_max)
+    row["cpu_throttle_container_min"] = f(cpu_throttle_avg)
     row["cpu_throttle_container_sum"] = f(cpu_throttle_avg)
     row["memory_request_container_avg"] = i(mem_req)
     row["memory_request_container_sum"] = i(mem_req)
