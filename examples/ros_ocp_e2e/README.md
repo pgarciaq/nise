@@ -19,6 +19,8 @@ nise report ocp --static-report-file examples/ros_ocp_e2e/ocp_report_gpu_mig.yml
 - `ocp_report_gpu_timeslicing.yml` — GPU time-slicing recommendations
 - `ocp_report_gpu_combined.yml` — Combined GPU scenarios
 
+`--ros-ocp-info` `ocp_ros_usage` emits one container row per distinct `gpu_uuid` (MIG slices that share a UUID stay one row).
+
 ### Virtual Machines
 - `ocp_report_vm.yml` — Basic VM workloads
 - `ocp_report_vm_enhancements.yml` — VM sizing enhancements (notifications 46–49)

@@ -2302,8 +2302,8 @@ class OCPGeneratorTestCase(TestCase):
         self.assertEqual(pod_data["instance_type"], "m5.2xlarge")
         self.assertEqual(pod_data["node_capacity_cpu_cores"], 8)
 
-    def test_ros_data_first_gpu_uuid_does_not_explode_rows(self):
-        """Two GPUs on a pod still produce one ROS row with the first UUID."""
+    def test_ros_csv_one_row_per_distinct_gpu_uuid(self):
+        """Four physical GPUs on a pod produce four ROS CSV rows per interval, same CPU/identity."""
         attributes = {
             "nodes": [
                 {
@@ -2322,6 +2322,8 @@ class OCPGeneratorTestCase(TestCase):
                                     "gpus": [
                                         {"gpu_model": "A100", "gpu_memory_capacity_mib": 40960},
                                         {"gpu_model": "A100", "gpu_memory_capacity_mib": 40960},
+                                        {"gpu_model": "A100", "gpu_memory_capacity_mib": 40960},
+                                        {"gpu_model": "A100", "gpu_memory_capacity_mib": 40960},
                                     ],
                                 },
                                 {
@@ -2338,21 +2340,91 @@ class OCPGeneratorTestCase(TestCase):
             ]
         }
         generator = OCPGenerator(self.two_hours_ago, self.now, attributes, ros_ocp_info=True)
-        gpu_rows = [p for p in generator.ros_data.values() if p.get("pod") == "multi-gpu-pod"]
-        self.assertEqual(len(gpu_rows), 1)
+        expected_uuids = {f"GPU-{uuid5(NAMESPACE_DNS, f'nise.ocp.gpu.gpu-node.multi-gpu-pod.{i}')}" for i in range(4)}
         first_uuid = f"GPU-{uuid5(NAMESPACE_DNS, 'nise.ocp.gpu.gpu-node.multi-gpu-pod.0')}"
-        second_uuid = f"GPU-{uuid5(NAMESPACE_DNS, 'nise.ocp.gpu.gpu-node.multi-gpu-pod.1')}"
-        self.assertEqual(len(generator.gpus["multi-gpu-pod"]), 2)
-        self.assertEqual(gpu_rows[0]["gpu_uuid"], first_uuid)
-        self.assertNotEqual(gpu_rows[0]["gpu_uuid"], second_uuid)
-        self.assertEqual(gpu_rows[0]["node_allocatable_gpu_count"], 2)
+        self.assertEqual(len(generator.gpus["multi-gpu-pod"]), 4)
+        ros_templates = [p for p in generator.ros_data.values() if p.get("pod") == "multi-gpu-pod"]
+        self.assertEqual(len(ros_templates), 1, "ros_data must stay one entry per pod")
+        self.assertEqual(ros_templates[0]["gpu_uuid"], first_uuid)
+        self.assertEqual(ros_templates[0]["node_allocatable_gpu_count"], 4)
         sidecar = generator.ros_data["cpu-sidecar"]
         self.assertEqual(sidecar["gpu_uuid"], "")
-        self.assertEqual(sidecar["node_allocatable_gpu_count"], 2)
+        self.assertEqual(sidecar["node_allocatable_gpu_count"], 4)
+
         ros_csv = list(generator.generate_data(OCP_ROS_USAGE))
-        multi_rows = [r for r in ros_csv if r.get("pod") == "multi-gpu-pod"]
-        self.assertGreater(len(multi_rows), 0)
-        self.assertEqual({r["gpu_uuid"] for r in multi_rows}, {first_uuid})
+        by_interval = {}
+        for row in ros_csv:
+            if row.get("pod") != "multi-gpu-pod":
+                continue
+            by_interval.setdefault(row["interval_start"], []).append(row)
+        self.assertGreater(len(by_interval), 0)
+        for interval, rows in by_interval.items():
+            uuids = {r["gpu_uuid"] for r in rows}
+            self.assertEqual(len(rows), 4, f"expected 4 ROS rows at {interval}, got {len(rows)}")
+            self.assertEqual(uuids, expected_uuids)
+            self.assertEqual(len({r["cpu_request_container_avg"] for r in rows}), 1)
+            self.assertEqual(len({r["workload"] for r in rows}), 1)
+            self.assertEqual({r["namespace"] for r in rows}, {"ml-ns"})
+            self.assertEqual(len({r["container_name"] for r in rows}), 1)
+
+        sidecar_by_interval = {}
+        for row in ros_csv:
+            if row.get("pod") != "cpu-sidecar":
+                continue
+            sidecar_by_interval.setdefault(row["interval_start"], []).append(row)
+        for interval, rows in sidecar_by_interval.items():
+            self.assertEqual(len(rows), 1, f"CPU-only pod must stay one ROS row at {interval}")
+            self.assertEqual(rows[0]["gpu_uuid"], "")
+
+    def test_ros_csv_mig_slices_share_one_row_per_physical_uuid(self):
+        """MIG slices on one physical GPU share gpu_uuid; ROS CSV emits one row, not one per slice."""
+        gpu = {
+            "gpu_model": "A100",
+            "gpu_memory_capacity_mib": 40960,
+            "mig_instances": [
+                {"mig_profile": "1g.5gb", "mig_strategy": "mixed"},
+                {"mig_profile": "2g.10gb", "mig_strategy": "mixed"},
+                {"mig_profile": "4g.40gb", "mig_strategy": "mixed"},
+            ],
+        }
+        attributes = {
+            "nodes": [
+                {
+                    "node_name": "mig-node",
+                    "cpu_cores": 16,
+                    "memory_gig": 64,
+                    "namespaces": {
+                        "ns": {
+                            "pods": [
+                                {
+                                    "pod_name": "triple-mig-pod",
+                                    "cpu_request": 4,
+                                    "mem_request_gig": 16,
+                                    "cpu_limit": 8,
+                                    "mem_limit_gig": 32,
+                                    "gpus": [gpu],
+                                },
+                            ]
+                        }
+                    },
+                }
+            ]
+        }
+        generator = OCPGenerator(self.two_hours_ago, self.now, attributes, ros_ocp_info=True)
+        self.assertEqual(len(generator.gpus["triple-mig-pod"]), 3)
+        physical_uuids = {g["gpu_uuid"] for g in generator.gpus["triple-mig-pod"]}
+        self.assertEqual(len(physical_uuids), 1)
+        physical_uuid = next(iter(physical_uuids))
+        ros_csv = list(generator.generate_data(OCP_ROS_USAGE))
+        by_interval = {}
+        for row in ros_csv:
+            if row.get("pod") != "triple-mig-pod":
+                continue
+            by_interval.setdefault(row["interval_start"], []).append(row)
+        self.assertGreater(len(by_interval), 0)
+        for interval, rows in by_interval.items():
+            self.assertEqual(len(rows), 1, f"MIG must not explode ROS rows at {interval}")
+            self.assertEqual(rows[0]["gpu_uuid"], physical_uuid)
 
     def test_ros_data_tier2_gpu_no_profiling_metrics(self):
         """Test that Tier 2 GPUs (V100) have FB usage but empty PROF_ metrics."""

@@ -180,6 +180,8 @@ To generate GPU data using a static file:
 
 This will generate all standard OCP reports, with the `ocp_gpu_usage.csv` containing GPU-specific metrics including GPU model, vendor, memory capacity, and pod uptime.
 
+With `--ros-ocp-info`, `ocp_ros_usage` emits **one full container row per distinct `gpu_uuid`** (same CPU/memory/identity, that device’s DCGM). A pod with four `gpus:` entries therefore produces four ROS rows per interval so ROS `gpu_count` can be 4. MIG slices that share one physical UUID stay a single ROS row (first slice’s DCGM). CPU-only pods stay one row with an empty `gpu_uuid`. Container CPU digest `sample_count` for a multi-GPU pod is N× (identical values); percentiles and averages are unchanged. Do not strip CPU from the extra rows.
+
 
 ## OCP-on-Cloud reports
 

@@ -2078,24 +2078,21 @@ class OCPGenerator(AbstractGenerator):
                     yield row
 
     def _gen_quarter_hourly_ros_ocp_pods_usage(self, **kwargs):
-        """Create hourly data for pod usage."""
+        """Create ROS container rows. GPU pods yield one row per distinct gpu_uuid."""
         for quarter_hour in self.quarter_hours:
             start = quarter_hour.get("start")
             end = quarter_hour.get("end")
             if self._nodes:
-                for pod_name, _ in self.pods.items():
-                    pod = self.ros_data[pod_name].copy()
-                    row = self._init_data_row(start, end, **kwargs)
-                    yield self._update_data(row, start, end, pod=pod, **kwargs)
+                pod_names = list(self.pods)
             else:
                 pod_count = len(self.pods)
                 num_pods = randint(2, pod_count)
                 pod_index_list = range(pod_count)
                 pod_choices = list(set(choices(pod_index_list, k=num_pods)))
                 pod_keys = list(self.pods.keys())
-                for pod_choice in pod_choices:
-                    pod_name = pod_keys[pod_choice]
-                    pod = self.ros_data[pod_name].copy()
+                pod_names = [pod_keys[i] for i in pod_choices]
+            for pod_name in pod_names:
+                for pod in self._ros_pod_gpu_variants(pod_name):
                     row = self._init_data_row(start, end, **kwargs)
                     yield self._update_data(row, start, end, pod=pod, **kwargs)
 
@@ -2459,26 +2456,50 @@ class OCPGenerator(AbstractGenerator):
                     uuids_by_node[node_name].add(uuid)
         return {node_name: len(uuids) for node_name, uuids in uuids_by_node.items()}
 
-    def _enrich_ros_data_with_gpus(self):
-        """Add GPU profiling metrics to ROS pod data for pods that have GPUs.
+    def _distinct_gpus_by_uuid(self, pod_name):
+        """First GPU dict per distinct gpu_uuid (MIG slices sharing a UUID collapse to one)."""
+        seen = {}
+        for gpu in self.gpus.get(pod_name) or []:
+            uuid = gpu.get("gpu_uuid")
+            if not uuid or uuid in seen:
+                continue
+            seen[uuid] = gpu
+        return list(seen.values())
 
-        One ROS row per container: DCGM metrics and gpu_uuid come from the
-        first GPU on that pod. Pods without GPUs get empty GPU columns.
-        node_allocatable_gpu_count is the distinct GPU UUID count on that
-        node (0 if none).
+    def _overlay_ros_gpu(self, pod, gpu):
+        """Stamp DCGM columns and gpu_uuid from one physical GPU onto a ROS pod dict."""
+        gpu_model = gpu["gpu_model_name"]
+        gpu_memory = gpu.get("gpu_memory_capacity_mib", _get_fb_total_mib(gpu_model))
+        pod.update(_gen_ros_gpu_metrics(gpu_model, gpu_memory, gpu.get("mig_profile"), gpu.get("metric_overrides")))
+        pod["gpu_uuid"] = gpu.get("gpu_uuid") or ""
+
+    def _ros_pod_gpu_variants(self, pod_name):
+        """Yield ROS pod copies, one per distinct GPU UUID (or a single copy if none)."""
+        template = self.ros_data[pod_name]
+        gpus = self._distinct_gpus_by_uuid(pod_name)
+        if not gpus:
+            yield template.copy()
+            return
+        for gpu in gpus:
+            pod = template.copy()
+            self._overlay_ros_gpu(pod, gpu)
+            yield pod
+
+    def _enrich_ros_data_with_gpus(self):
+        """Add GPU profiling metrics to the per-pod ROS template.
+
+        ros_data stays one entry per pod (namespace ROS sums that map).
+        CSV emit clones one full row per distinct gpu_uuid. The template
+        keeps the first UUID's DCGM. Pods without GPUs get empty GPU
+        columns. node_allocatable_gpu_count is the distinct GPU UUID
+        count on that node (0 if none).
         """
         gpu_counts = self._node_allocatable_gpu_counts()
         for pod_name, ros_pod in self.ros_data.items():
             ros_pod["node_allocatable_gpu_count"] = gpu_counts.get(ros_pod.get("node"), 0)
-            pod_gpus = self.gpus.get(pod_name)
-            if pod_gpus:
-                gpu = pod_gpus[0]
-                gpu_model = gpu["gpu_model_name"]
-                gpu_memory = gpu.get("gpu_memory_capacity_mib", _get_fb_total_mib(gpu_model))
-                mig_profile = gpu.get("mig_profile")
-                overrides = gpu.get("metric_overrides")
-                ros_pod.update(_gen_ros_gpu_metrics(gpu_model, gpu_memory, mig_profile, overrides))
-                ros_pod["gpu_uuid"] = gpu.get("gpu_uuid") or ""
+            gpus = self._distinct_gpus_by_uuid(pod_name)
+            if gpus:
+                self._overlay_ros_gpu(ros_pod, gpus[0])
             else:
                 ros_pod.update(_EMPTY_GPU_METRICS)
 
