@@ -848,6 +848,10 @@ class OCPVMReportIntegrationTestCase(TestCase):
                 }
                 ocp_create_report(options)
                 pvc_matches = [f for f in os.listdir(tmpdir) if "ocp_ros_vm_pvc" in f]
-                self.assertEqual(len(pvc_matches), 0)
+                # Companion files always materialize (header-only when empty):
+                # assert no DATA rows rather than no file.
+                self.assertEqual(len(pvc_matches), 1)
+                with open(os.path.join(tmpdir, pvc_matches[0])) as fh:
+                    self.assertEqual(len(fh.readlines()), 1)  # header only
             finally:
                 os.chdir(prev_cwd)
