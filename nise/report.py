@@ -1023,8 +1023,10 @@ def ocp_create_report(options):  # noqa: C901
                         data[report_type].clear()
 
         for report_type in flush_report_types:
-            if not data.get(report_type):
-                continue
+            # Write every declared report type unconditionally (header-only
+            # when empty): downstream tests and MASU ingestion expect the full
+            # file set. A header-only companion file carries the same signal
+            # as absence (no data) without breaking the file-set contract.
             if file_numbers[report_type] != 0:
                 file_numbers[report_type] += 1
 
