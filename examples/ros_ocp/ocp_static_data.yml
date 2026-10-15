@@ -581,3 +581,29 @@ generators:
                   replica_count: 2
                   labels: label_app:coredns|label_environment:production
                   workload: deployment
+        # --- Reliability demo node: crash-loop workload + node MemoryPressure ---
+        # Exercises ROS codes 86 (crash gate) and 87 (node pressure). The
+        # restart_count is per container row; the backend sums across the
+        # window, so 8/row crosses the code-86 threshold within hours.
+        # node_pressure_* flags stamp every container row of this node,
+        # mirroring the operator's on(node) join semantics.
+        - node:
+          node_name: worker-unstable-1
+          node_labels: "label_environment:testing|label_role:compute|label_region:us-east-1"
+          cpu_cores: 8
+          memory_gig: 32
+          resource_id: node-unstable-1-id
+          node_pressure_memory: 1
+          namespaces:
+            crash-demo:
+              pods:
+                - pod:
+                  pod_name: crashloop-demo
+                  cpu_request: 100
+                  mem_request_gig: 0.25
+                  cpu_limit: 200
+                  mem_limit_gig: 0.5
+                  replica_count: 1
+                  restart_count: 8
+                  labels: label_app:crashloop|label_environment:testing
+                  workload: deployment

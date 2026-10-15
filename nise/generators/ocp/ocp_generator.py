@@ -282,6 +282,12 @@ OCP_ROS_USAGE_COLUMN = (
     "sm_active_min",
     "sm_active_max",
     "sm_active_avg",
+    # Reliability signals for ROS codes 86/87 (#683), appended at the end
+    # so existing header adjacency stays untouched.
+    "restart_count",
+    "node_pressure_memory",
+    "node_pressure_disk",
+    "node_pressure_pid",
 )
 OCP_ROS_NAMESPACE_USAGE_COLUMN = (
     "report_period_start",
@@ -1129,6 +1135,11 @@ class OCPGenerator(AbstractGenerator):
                         item.get("memory_allocatable_bytes", item.get("memory_allocatable")),
                     ),
                     "instance_type": item.get("instance_type") or "",
+                    # Reliability signals for ROS codes 86/87 (#683): node-level
+                    # pressure flags stamped on every container row of the node.
+                    "node_pressure_memory": item.get("node_pressure_memory", 0),
+                    "node_pressure_disk": item.get("node_pressure_disk", 0),
+                    "node_pressure_pid": item.get("node_pressure_pid", 0),
                 }
                 nodes.append(node)
         else:
@@ -1354,6 +1365,14 @@ class OCPGenerator(AbstractGenerator):
             "memory_rss_usage_container_max": round(memory_usage_gig_max * memory_rss_ratio * GIGABYTE),
             "memory_rss_usage_container_sum": round(memory_usage_gig_avg * memory_rss_ratio * GIGABYTE),
             "oom_count": specified_pod.get("oom_count", choices([0, randint(1, 3)], weights=(9, 1))[0]),
+            # Reliability signals for ROS codes 86/87 (#683): per-row restart
+            # count (backend sums across the window) and node-level pressure
+            # flags stamped on every row of a pressured node. Static YAML
+            # only, zero defaults — no randomized background.
+            "restart_count": specified_pod.get("restart_count", 0),
+            "node_pressure_memory": node.get("node_pressure_memory", 0),
+            "node_pressure_disk": node.get("node_pressure_disk", 0),
+            "node_pressure_pid": node.get("node_pressure_pid", 0),
             "workload_pod_count": specified_pod.get(
                 "replica_count", choices([1, 2, 3, 4, 5], weights=(3, 3, 2, 1, 1))[0]
             ),
@@ -1478,6 +1497,12 @@ class OCPGenerator(AbstractGenerator):
                         "workload_pod_count": (wpc := choices([1, 2, 3, 4, 5], weights=(3, 3, 2, 1, 1))[0]),
                         "desired_replicas": wpc,
                         "available_replicas": max(1, wpc - choices([0, 1], weights=(9, 1))[0]),
+                        # Reliability signals default to zero here: no randomized
+                        # background pressure/restarts (#683).
+                        "restart_count": 0,
+                        "node_pressure_memory": 0,
+                        "node_pressure_disk": 0,
+                        "node_pressure_pid": 0,
                     }
 
         return pods, namespace2pod, ros_ocp_data_pods

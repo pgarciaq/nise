@@ -409,6 +409,9 @@ class OCPGeneratorTestCase(TestCase):
             "node_allocatable_cpu_cores",
             "node_allocatable_memory_bytes",
             "instance_type",
+            "node_pressure_memory",
+            "node_pressure_disk",
+            "node_pressure_pid",
         ]
         self.assertEqual(list(out_nodes[0].keys()), expected_keys)
 
@@ -2066,6 +2069,92 @@ class OCPGeneratorTestCase(TestCase):
             self.assertIsInstance(oom_val, int)
             self.assertGreaterEqual(oom_val, 0)
             self.assertLessEqual(oom_val, 3)
+
+    def test_ros_usage_column_includes_reliability_signals(self):
+        """ROCS CSV header carries container restart and node-pressure columns (codes 86/87)."""
+        for col in ("restart_count", "node_pressure_memory", "node_pressure_disk", "node_pressure_pid"):
+            self.assertIn(col, OCP_ROS_USAGE_COLUMN)
+
+    def test_ros_usage_column_reliability_position(self):
+        """Reliability columns append at the header end without reordering existing adjacency."""
+        tail = OCP_ROS_USAGE_COLUMN[-4:]
+        self.assertEqual(tail, ("restart_count", "node_pressure_memory", "node_pressure_disk", "node_pressure_pid"))
+
+    def test_ros_data_reliability_defaults_zero(self):
+        """Without static knobs every row is unpressured with no restarts (no flaky 87s)."""
+        random.seed(42)
+        generator = OCPGenerator(self.two_hours_ago, self.now, {}, ros_ocp_info=True)
+
+        self.assertTrue(generator.ros_data, "expected generated ROS pod rows")
+        for pod_key, pod_data in generator.ros_data.items():
+            self.assertEqual(pod_data.get("restart_count"), 0, f"pod {pod_key} should default restart_count=0")
+            for col in ("node_pressure_memory", "node_pressure_disk", "node_pressure_pid"):
+                self.assertEqual(pod_data.get(col), 0, f"pod {pod_key} should default {col}=0")
+
+    def test_ros_data_yaml_driven_reliability_signals(self):
+        """Static pod restart and node pressure flags surface per-row, scoped to their node."""
+        random.seed(42)
+        attributes = {
+            "nodes": [
+                {
+                    "node_name": "pressured-node",
+                    "cpu_cores": 4,
+                    "memory_gig": 16,
+                    "node_pressure_memory": 1,
+                    "namespaces": {
+                        "test-ns": {
+                            "pods": [
+                                {
+                                    "pod_name": "crash-pod",
+                                    "cpu_request": 1,
+                                    "mem_request_gig": 2,
+                                    "cpu_limit": 2,
+                                    "mem_limit_gig": 4,
+                                    "restart_count": 8,
+                                }
+                            ]
+                        }
+                    },
+                },
+                {
+                    "node_name": "clean-node",
+                    "cpu_cores": 4,
+                    "memory_gig": 16,
+                    "namespaces": {
+                        "test-ns": {
+                            "pods": [
+                                {
+                                    "pod_name": "steady-pod",
+                                    "cpu_request": 1,
+                                    "mem_request_gig": 2,
+                                    "cpu_limit": 2,
+                                    "mem_limit_gig": 4,
+                                }
+                            ]
+                        }
+                    },
+                },
+            ]
+        }
+        generator = OCPGenerator(self.two_hours_ago, self.now, attributes, ros_ocp_info=True)
+
+        by_node = {}
+        for pod_key, pod_data in generator.ros_data.items():
+            by_node.setdefault(pod_data.get("node"), []).append((pod_key, pod_data))
+        self.assertIn("pressured-node", by_node)
+        self.assertIn("clean-node", by_node)
+
+        for pod_key, pod_data in by_node["pressured-node"]:
+            if "crash-pod" in pod_key:
+                self.assertEqual(pod_data.get("restart_count"), 8)
+            self.assertEqual(pod_data.get("node_pressure_memory"), 1)
+            self.assertEqual(pod_data.get("node_pressure_disk"), 0)
+            self.assertEqual(pod_data.get("node_pressure_pid"), 0)
+        for pod_key, pod_data in by_node["clean-node"]:
+            # Node scoping: flags must not leak across nodes.
+            self.assertEqual(pod_data.get("restart_count"), 0, f"pod {pod_key} should have restart_count=0")
+            for col in ("node_pressure_memory", "node_pressure_disk", "node_pressure_pid"):
+                self.assertEqual(pod_data.get(col), 0, f"pod {pod_key} should have {col}=0")
 
     def test_ros_usage_column_includes_workload_pod_count(self):
         """Test that OCP_ROS_USAGE_COLUMN includes the workload_pod_count field."""
