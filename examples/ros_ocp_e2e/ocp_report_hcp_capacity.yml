@@ -1,0 +1,75 @@
+---
+# HCP fleet-capacity snapshots for capacity-advisory E2E (W4 / robne --plugins hcp).
+# Use with: nise report ocp --static-report-file <this file> \
+#             --ocp-cluster-id <mgmt-cluster-id> --ros-ocp-info -w
+#
+# The hcp_capacity block emits ros-openshift-hcp-capacity-YYYYMM.csv (one
+# file per month, KMO contract name, no cluster id in the name — identity
+# comes from the payload manifest). Defaults reproduce the hand-verified
+# healthy-fleet fixture: 64 vCPU / 128 GiB / 1500 maxPods of eligible
+# workers, 4 hosted clusters, 2 ready, base QPS 300 (varying hourly),
+# highly available, complete inventory, known placement, unknown
+# pressure, MCE refs request/average=8, low absent, medium=4, high=2
+# -> capacity scenarios 7/7/7/5/3 with headroom +3/+3/+3/+1/-1.
+generators:
+  - OCPGenerator:
+      start_date: "2026-10-01"
+      end_date: "2026-10-02"
+      hcp_capacity: {}
+      # State variants (uncomment one block at a time, or merge keys):
+      #
+      # Incomplete inventory (occupancy unknown -> request/low/avg estimates
+      # withheld, headroom null):
+      # hcp_capacity:
+      #   inventory_complete: false
+      #
+      # Unknown QPS (average scenario withheld, never the 50-QPS basis):
+      # hcp_capacity:
+      #   ready_hcp_qps_known: false
+      #
+      # Affirmed pressure (all headroom withheld):
+      # hcp_capacity:
+      #   pressure_state: pressured
+      #
+      # Compact / shared-infrastructure topology (management control-plane
+      # nodes doubling as workers; adds the shared_infrastructure warning):
+      # hcp_capacity:
+      #   shared_infrastructure: true
+      #   hosted_availability_basis: single_replica
+      #
+      # Absent MCE references (all five null — absence, never zero):
+      # hcp_capacity:
+      #   mce_request_max_hcs: null
+      #   mce_average_qps_max_hcs: null
+      #   mce_medium_qps_max_hcs: null
+      #   mce_high_qps_max_hcs: null
+      #
+      # Every knob is overridable, e.g. a smaller compact lab:
+      # hcp_capacity:
+      #   current_hc_count: 2
+      #   ready_hcp_count: 1
+      #   base_ready_hcp_qps: 150.0
+      #   eligible_worker_cpu_allocatable_millicores: 16000
+      #   eligible_worker_memory_allocatable_bytes: 34359738368
+      #   eligible_worker_max_pods: 375
+      nodes:
+        - node:
+          node_name: hcp-mgmt-worker-1
+          cpu_cores: 8
+          memory_gig: 32
+          resource_id: hcp-mgmt-node-1
+          namespaces:
+            hcp-mgmt-ns:
+              pods:
+                - pod:
+                  pod_name: capacity-observer
+                  cpu_request: 0.1
+                  mem_request_gig: 0.25
+                  cpu_limit: 0.5
+                  mem_limit_gig: 0.5
+                  pod_seconds: 3600
+                  cpu_usage:
+                    full_period: 0.05
+                  mem_usage_gig:
+                    full_period: 0.1
+                  labels: label_app:hcp-capacity-e2e

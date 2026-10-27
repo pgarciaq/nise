@@ -31,6 +31,8 @@ from faker import Faker
 from nise.generators.ocp.ocp_generator import GIGABYTE
 from nise.generators.ocp.ocp_generator import GPU_MODELS
 from nise.generators.ocp.ocp_generator import GPU_VENDOR
+from nise.generators.ocp.ocp_generator import OCP_HCP_CAPACITY
+from nise.generators.ocp.ocp_generator import OCP_HCP_CAPACITY_COLUMNS
 from nise.generators.ocp.ocp_generator import OCP_GPU_USAGE
 from nise.generators.ocp.ocp_generator import OCP_GPU_USAGE_COLUMNS
 from nise.generators.ocp.ocp_generator import OCP_NAMESPACE_LABEL
@@ -2957,3 +2959,259 @@ class ResolveMigPartitionIdTest(TestCase):
     def test_invalid_type_list(self):
         with self.assertRaises(ValueError):
             OCPGenerator._resolve_mig_partition_id("p", "m", [])
+
+
+class GenHcpCapacityTest(TestCase):
+    """HCP fleet-capacity snapshot generator (ros-openshift-hcp-capacity).
+
+    The emitted CSV must byte-match the 25-column KMO/operator contract
+    consumed by ros-ocp-backend (librobne/csv HCPCapacityHeader) and robne;
+    default values are the hand-verified capacity fixture (healthy fleet:
+    64 vCPU / 128 GiB / 1500 pods, 4 hosted clusters, 2 ready, base QPS
+    300 -> scenarios 7/7/7/5/3 with headroom +3/+3/+3/+1/-1).
+    """
+
+    def setUp(self):
+        """Test setup."""
+        self.now = datetime(2026, 10, 27, 4, 0, 0)
+        self.two_hours_ago = self.now - timedelta(hours=2)
+
+    def test_hcp_capacity_registered_with_attribute(self):
+        """ros_ocp_info + hcp_capacity attribute registers the capacity report type."""
+        generator = OCPGenerator(self.two_hours_ago, self.now, {"hcp_capacity": {}}, ros_ocp_info=True)
+        self.assertIn(OCP_HCP_CAPACITY, generator.ocp_report_generation)
+
+    def test_hcp_capacity_registered_with_attribute_ros_only(self):
+        """ros_only mode registers the capacity report type too (snapshot pattern)."""
+        generator = OCPGenerator(self.two_hours_ago, self.now, {"hcp_capacity": {}}, ros_ocp_info=True, ros_only=True)
+        self.assertIn(OCP_HCP_CAPACITY, generator.ocp_report_generation)
+
+    def test_hcp_capacity_not_registered_without_attribute(self):
+        """Without the hcp_capacity attribute no capacity file is emitted (management-cluster only)."""
+        generator = OCPGenerator(self.two_hours_ago, self.now, {}, ros_ocp_info=True)
+        self.assertNotIn(OCP_HCP_CAPACITY, generator.ocp_report_generation)
+
+    def test_hcp_capacity_not_registered_without_ros_ocp_info(self):
+        """The capacity report never appears in plain cost mode."""
+        generator = OCPGenerator(self.two_hours_ago, self.now, {"hcp_capacity": {}})
+        self.assertNotIn(OCP_HCP_CAPACITY, generator.ocp_report_generation)
+
+    def test_hcp_capacity_columns_contract(self):
+        """The 25-column header matches the operator contract exactly, in order."""
+        self.assertEqual(
+            OCP_HCP_CAPACITY_COLUMNS,
+            (
+                "observed_at",
+                "mce_sampled_at",
+                "operator_version",
+                "ocp_version",
+                "mce_version",
+                "native_model_version",
+                "collection_interval_minutes",
+                "upload_cycle_minutes",
+                "inventory_complete",
+                "current_hc_count",
+                "ready_hcp_count",
+                "average_ready_hcp_qps",
+                "ready_hcp_qps_known",
+                "hosted_availability_basis",
+                "eligible_worker_cpu_allocatable_millicores",
+                "eligible_worker_memory_allocatable_bytes",
+                "eligible_worker_max_pods",
+                "worker_placement_known",
+                "pressure_state",
+                "mce_request_max_hcs",
+                "mce_low_qps_max_hcs",
+                "mce_average_qps_max_hcs",
+                "mce_medium_qps_max_hcs",
+                "mce_high_qps_max_hcs",
+                "shared_infrastructure",
+            ),
+        )
+        self.assertEqual(len(OCP_HCP_CAPACITY_COLUMNS), 25)
+
+    def test_hcp_capacity_default_row_values(self):
+        """Default knobs reproduce the hand-verified healthy-fleet fixture."""
+        generator = OCPGenerator(self.two_hours_ago, self.now, {"hcp_capacity": {}}, ros_ocp_info=True)
+        rows = list(generator.generate_data(report_type=OCP_HCP_CAPACITY))
+        self.assertGreaterEqual(len(rows), 1)
+        row = rows[0]
+        self.assertEqual(row["operator_version"], "deadbeef")
+        self.assertEqual(row["ocp_version"], "4.22.17")
+        self.assertEqual(row["mce_version"], "")
+        self.assertEqual(row["native_model_version"], "hcp-published-sizing-v1")
+        self.assertEqual(row["collection_interval_minutes"], 60)
+        self.assertEqual(row["upload_cycle_minutes"], 360)
+        self.assertEqual(row["inventory_complete"], "true")
+        self.assertEqual(row["current_hc_count"], 4)
+        self.assertEqual(row["ready_hcp_count"], 2)
+        self.assertEqual(row["ready_hcp_qps_known"], "true")
+        self.assertEqual(row["hosted_availability_basis"], "highly_available")
+        self.assertEqual(row["eligible_worker_cpu_allocatable_millicores"], 64000)
+        self.assertEqual(row["eligible_worker_memory_allocatable_bytes"], 137438953472)
+        self.assertEqual(row["eligible_worker_max_pods"], 1500)
+        self.assertEqual(row["worker_placement_known"], "true")
+        self.assertEqual(row["pressure_state"], "unknown")
+        self.assertEqual(row["mce_request_max_hcs"], 8)
+        self.assertIsNone(row["mce_low_qps_max_hcs"])
+        self.assertEqual(row["mce_average_qps_max_hcs"], 8)
+        self.assertEqual(row["mce_medium_qps_max_hcs"], 4)
+        self.assertEqual(row["mce_high_qps_max_hcs"], 2)
+        self.assertEqual(row["shared_infrastructure"], "false")
+
+    def test_hcp_capacity_row_per_hour_with_hour_end_observed_at(self):
+        """One observation per hour; observed_at/mce_sampled_at are the hour end, RFC3339 Z."""
+        generator = OCPGenerator(self.two_hours_ago, self.now, {"hcp_capacity": {}}, ros_ocp_info=True)
+        rows = list(generator.generate_data(report_type=OCP_HCP_CAPACITY))
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0]["observed_at"], "2026-10-27T02:59:59Z")
+        self.assertEqual(rows[1]["observed_at"], "2026-10-27T03:59:59Z")
+        self.assertEqual(rows[0]["mce_sampled_at"], rows[0]["observed_at"])
+        self.assertEqual(rows[1]["mce_sampled_at"], rows[1]["observed_at"])
+
+    def test_hcp_capacity_qps_varies_deterministically(self):
+        """QPS moves hourly (real hcp-mgmt shape) via fixed arithmetic, not faker."""
+        gen_one = OCPGenerator(self.two_hours_ago, self.now, {"hcp_capacity": {}}, ros_ocp_info=True)
+        gen_two = OCPGenerator(self.two_hours_ago, self.now, {"hcp_capacity": {}}, ros_ocp_info=True)
+        rows_one = list(gen_one.generate_data(report_type=OCP_HCP_CAPACITY))
+        rows_two = list(gen_two.generate_data(report_type=OCP_HCP_CAPACITY))
+        self.assertEqual(rows_one, rows_two, "series must be deterministic across runs")
+        qps_values = [row["average_ready_hcp_qps"] for row in rows_one]
+        self.assertEqual(len(set(qps_values)), len(qps_values), "consecutive hours must differ")
+        base = 300.0
+        for row in rows_one:
+            delta = row["average_ready_hcp_qps"] - base
+            self.assertTrue(-50 <= delta <= 50, f"QPS {row['average_ready_hcp_qps']} must stay near base {base}")
+            self.assertEqual((delta / 25) % 1, 0, "QPS variation must be 25-step arithmetic")
+
+    def test_hcp_capacity_mce_refs_frozen(self):
+        """MCE reference gauges stay identical across the series while QPS moves (may-be-stale shape)."""
+        generator = OCPGenerator(self.two_hours_ago, self.now, {"hcp_capacity": {}}, ros_ocp_info=True)
+        rows = list(generator.generate_data(report_type=OCP_HCP_CAPACITY))
+        ref_keys = (
+            "mce_request_max_hcs",
+            "mce_low_qps_max_hcs",
+            "mce_average_qps_max_hcs",
+            "mce_medium_qps_max_hcs",
+            "mce_high_qps_max_hcs",
+        )
+        for key in ref_keys:
+            self.assertEqual(len({row[key] for row in rows}), 1, f"{key} must be frozen")
+
+    def test_hcp_capacity_knobs_override_defaults(self):
+        """Static-YAML knobs drive every advisory state (incomplete, pressured, compact, absent MCE)."""
+        attributes = {
+            "hcp_capacity": {
+                "operator_version": "cafebabe",
+                "ocp_version": "4.16.0",
+                "mce_version": "2.6.0",
+                "collection_interval_minutes": 15,
+                "upload_cycle_minutes": 60,
+                "inventory_complete": False,
+                "current_hc_count": 9,
+                "ready_hcp_count": 1,
+                "ready_hcp_qps_known": False,
+                "hosted_availability_basis": "single_replica",
+                "eligible_worker_cpu_allocatable_millicores": 8000,
+                "eligible_worker_memory_allocatable_bytes": 32 * GIGABYTE,
+                "eligible_worker_max_pods": 250,
+                "worker_placement_known": False,
+                "pressure_state": "pressured",
+                "mce_request_max_hcs": 3,
+                "mce_low_qps_max_hcs": None,
+                "mce_average_qps_max_hcs": None,
+                "mce_medium_qps_max_hcs": None,
+                "mce_high_qps_max_hcs": None,
+                "shared_infrastructure": True,
+            }
+        }
+        generator = OCPGenerator(self.two_hours_ago, self.now, attributes, ros_ocp_info=True)
+        rows = list(generator.generate_data(report_type=OCP_HCP_CAPACITY))
+        row = rows[0]
+        self.assertEqual(row["operator_version"], "cafebabe")
+        self.assertEqual(row["ocp_version"], "4.16.0")
+        self.assertEqual(row["mce_version"], "2.6.0")
+        self.assertEqual(row["collection_interval_minutes"], 15)
+        self.assertEqual(row["upload_cycle_minutes"], 60)
+        self.assertEqual(row["inventory_complete"], "false")
+        self.assertEqual(row["current_hc_count"], 9)
+        self.assertEqual(row["ready_hcp_count"], 1)
+        self.assertEqual(row["ready_hcp_qps_known"], "false")
+        self.assertEqual(row["hosted_availability_basis"], "single_replica")
+        self.assertEqual(row["eligible_worker_cpu_allocatable_millicores"], 8000)
+        self.assertEqual(row["eligible_worker_memory_allocatable_bytes"], 32 * GIGABYTE)
+        self.assertEqual(row["eligible_worker_max_pods"], 250)
+        self.assertEqual(row["worker_placement_known"], "false")
+        self.assertEqual(row["pressure_state"], "pressured")
+        self.assertEqual(row["mce_request_max_hcs"], 3)
+        self.assertIsNone(row["mce_low_qps_max_hcs"])
+        self.assertIsNone(row["mce_average_qps_max_hcs"])
+        self.assertIsNone(row["mce_medium_qps_max_hcs"])
+        self.assertIsNone(row["mce_high_qps_max_hcs"])
+        self.assertEqual(row["shared_infrastructure"], "true")
+
+    def test_hcp_capacity_unknown_qps_omits_value(self):
+        """ready_hcp_qps_known=false leaves average_ready_hcp_qps empty (NULL, never zero)."""
+        attributes = {"hcp_capacity": {"ready_hcp_qps_known": False}}
+        generator = OCPGenerator(self.two_hours_ago, self.now, attributes, ros_ocp_info=True)
+        rows = list(generator.generate_data(report_type=OCP_HCP_CAPACITY))
+        for row in rows:
+            self.assertEqual(row["average_ready_hcp_qps"], "")
+
+
+class HcpCapacityReportIntegrationTestCase(TestCase):
+    """Integration: the capacity CSV routes through ocp_create_report with the KMO-contract name."""
+
+    def test_ocp_create_report_writes_hcp_capacity_csv(self):
+        """ocp_create_report emits ros-openshift-hcp-capacity-YYYYMM.csv (no cluster id, no -N part)."""
+        import csv
+        import os
+        import tempfile
+
+        from nise.report import ocp_create_report
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            prev_cwd = os.getcwd()
+            os.chdir(tmpdir)
+            try:
+                options = {
+                    "start_date": datetime(2026, 5, 1),
+                    "end_date": datetime(2026, 5, 2),
+                    "ocp_cluster_id": "test-hcp-cluster",
+                    "ros_ocp_info": True,
+                    "static_report_data": {
+                        "generators": [
+                            {
+                                "OCPGenerator": {
+                                    "start_date": "2026-05-01",
+                                    "end_date": "2026-05-02",
+                                    "hcp_capacity": {},
+                                }
+                            }
+                        ]
+                    },
+                    "row_limit": 100000,
+                    "write_monthly": True,
+                }
+                ocp_create_report(options)
+                expected = os.path.join(tmpdir, "ros-openshift-hcp-capacity-202605.csv")
+                self.assertTrue(os.path.isfile(expected), f"expected contract file {expected}")
+                with open(expected, newline="") as handle:
+                    reader = csv.reader(handle)
+                    header = next(reader)
+                    rows = list(reader)
+                self.assertEqual(header, list(OCP_HCP_CAPACITY_COLUMNS))
+                self.assertEqual(len(rows), 24, "one observation per hour of the day")
+                for row in rows:
+                    self.assertEqual(len(row), 25)
+                self.assertEqual(rows[0][0], "2026-05-01T00:59:59Z")
+                self.assertEqual(rows[-1][0], "2026-05-01T23:59:59Z")
+            finally:
+                os.chdir(prev_cwd)
+
+    def test_write_ocp_file_hcp_capacity_multi_part_raises(self):
+        """The contract is one file per month: a non-zero part number is rejected."""
+        from nise.report import write_ocp_file
+
+        with self.assertRaises(ValueError):
+            write_ocp_file(1, "cluster-x", "May", 2026, OCP_HCP_CAPACITY, [])

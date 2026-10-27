@@ -58,6 +58,7 @@ OCP_ROS_VM_GPU_DEVICE = "ocp_ros_vm_gpu_device"
 OCP_ROS_VM_PVC = "ocp_ros_vm_pvc"
 OCP_GPU_USAGE = "ocp_gpu_usage"
 OCP_SNAPSHOT_INVENTORY = "ocp_snapshot_inventory"
+OCP_HCP_CAPACITY = "ros-openshift-hcp-capacity"
 OCP_POD_USAGE_COLUMNS = (
     "report_period_start",
     "report_period_end",
@@ -390,6 +391,71 @@ OCP_SNAPSHOT_INVENTORY_COLUMNS = (
     "labels",
 )
 
+# HCP fleet-capacity snapshot: the 25-column KMO/operator contract, in
+# order. This must byte-match librobne/csv HCPCapacityHeader in
+# ros-ocp-backend (single consumer of the file); column drift is a
+# contract break, not a nise-internal change.
+OCP_HCP_CAPACITY_COLUMNS = (
+    "observed_at",
+    "mce_sampled_at",
+    "operator_version",
+    "ocp_version",
+    "mce_version",
+    "native_model_version",
+    "collection_interval_minutes",
+    "upload_cycle_minutes",
+    "inventory_complete",
+    "current_hc_count",
+    "ready_hcp_count",
+    "average_ready_hcp_qps",
+    "ready_hcp_qps_known",
+    "hosted_availability_basis",
+    "eligible_worker_cpu_allocatable_millicores",
+    "eligible_worker_memory_allocatable_bytes",
+    "eligible_worker_max_pods",
+    "worker_placement_known",
+    "pressure_state",
+    "mce_request_max_hcs",
+    "mce_low_qps_max_hcs",
+    "mce_average_qps_max_hcs",
+    "mce_medium_qps_max_hcs",
+    "mce_high_qps_max_hcs",
+    "shared_infrastructure",
+)
+
+# Default knobs reproduce the hand-verified healthy-fleet fixture from
+# ros-ocp-backend (librobne/hcp capacity_test.go): 64 vCPU / 128 GiB /
+# 1500 maxPods of eligible workers, 4 hosted clusters, 2 ready, base QPS
+# 300, highly available, complete inventory, known placement, unknown
+# pressure (v1 never claims clear), MCE refs request/average=8, low
+# absent, medium=4, high=2 -> capacity scenarios 7/7/7/5/3 with headroom
+# +3/+3/+3/+1/-1. mce refs stay frozen across the series (the real
+# hcp-mgmt may-be-stale shape) while QPS moves hourly.
+HCP_CAPACITY_DEFAULTS = {
+    "operator_version": "deadbeef",
+    "ocp_version": "4.22.17",
+    "mce_version": "",
+    "collection_interval_minutes": 60,
+    "upload_cycle_minutes": 360,
+    "inventory_complete": True,
+    "current_hc_count": 4,
+    "ready_hcp_count": 2,
+    "base_ready_hcp_qps": 300.0,
+    "ready_hcp_qps_known": True,
+    "hosted_availability_basis": "highly_available",
+    "eligible_worker_cpu_allocatable_millicores": 64000,
+    "eligible_worker_memory_allocatable_bytes": 137438953472,
+    "eligible_worker_max_pods": 1500,
+    "worker_placement_known": True,
+    "pressure_state": "unknown",
+    "mce_request_max_hcs": 8,
+    "mce_low_qps_max_hcs": None,
+    "mce_average_qps_max_hcs": 8,
+    "mce_medium_qps_max_hcs": 4,
+    "mce_high_qps_max_hcs": 2,
+    "shared_infrastructure": False,
+}
+
 COST_OCP_REPORT_TYPE_TO_COLS = {
     OCP_POD_USAGE: OCP_POD_USAGE_COLUMNS,
     OCP_STORAGE_USAGE: OCP_STORAGE_COLUMNS,
@@ -408,6 +474,7 @@ ROS_OCP_REPORT_TYPE_TO_COLS = {
     OCP_ROS_VM_PVC: OCP_ROS_VM_PVC_COLUMNS,
     OCP_SNAPSHOT_INVENTORY: OCP_SNAPSHOT_INVENTORY_COLUMNS,
     OCP_STORAGE_USAGE: OCP_STORAGE_COLUMNS,
+    OCP_HCP_CAPACITY: OCP_HCP_CAPACITY_COLUMNS,
 }
 
 DEFAULT_CLUSTER_RESOURCE_QUOTA_NAMES = ("team-frontend", "team-backend", "team-platform")
@@ -984,6 +1051,7 @@ class OCPGenerator(AbstractGenerator):
         self.ros_ocp_info = ros_ocp_info
         self.constant_values_ros_ocp = constant_values_ros_ocp
         self.ros_only = ros_only
+        self.hcp_capacity = self._attributes.get("hcp_capacity")
         if attributes:
             self._nodes = attributes.get("nodes")
 
@@ -1050,12 +1118,24 @@ class OCPGenerator(AbstractGenerator):
             },
         }
 
+        # HCP fleet-capacity snapshots are management-cluster only: the
+        # file is emitted solely when the static YAML carries an
+        # hcp_capacity block (attribute-gated, unlike snapshots).
+        hcp_capacity_report = {
+            OCP_HCP_CAPACITY: {
+                "_generate_hourly_data": self._gen_hcp_capacity_rows,
+                "_update_data": self._update_hcp_capacity_data,
+            },
+        }
+
         if self.ros_only:
             # ONLY ROS reports
             self.ocp_report_generation = ros_reports
             if self.ros_ocp_info:
                 self.snapshots = self._gen_snapshots()
                 self.ocp_report_generation.update(snapshot_report)
+                if self.hcp_capacity is not None:
+                    self.ocp_report_generation.update(hcp_capacity_report)
                 if self.volumes:
                     self.ocp_report_generation[OCP_STORAGE_USAGE] = {
                         "_generate_hourly_data": self._gen_hourly_storage_usage,
@@ -1093,6 +1173,8 @@ class OCPGenerator(AbstractGenerator):
                 self.snapshots = self._gen_snapshots()
                 self.ocp_report_generation.update(ros_reports)
                 self.ocp_report_generation.update(snapshot_report)
+                if self.hcp_capacity is not None:
+                    self.ocp_report_generation.update(hcp_capacity_report)
 
     @staticmethod
     def timestamp(in_date):
@@ -2735,6 +2817,74 @@ class OCPGenerator(AbstractGenerator):
             "source_pvc_exists": snap.get("source_pvc_exists", "true"),
             "restored_pvc_count": snap.get("restored_pvc_count", 0),
             "labels": json.dumps(snap.get("labels", {})),
+        }
+        row.update(data)
+        return row
+
+    def _gen_hcp_capacity_rows(self, **kwargs):
+        """Generate HCP fleet-capacity rows (one observation per hour).
+
+        The monthly file accumulates hourly observations, mirroring the
+        operator: observed_at is the hour end (start + 59m59s), which is
+        the KMO convention.
+        """
+        for hour in self.hours:
+            start = hour.get("start")
+            end = hour.get("end")
+            row = self._init_data_row(start, end, **kwargs)
+            row = self._update_data(row, start, end, **kwargs)
+            yield row
+
+    def _update_hcp_capacity_data(self, row, start, end, **kwargs):
+        """Fill a fleet-capacity row from the hcp_capacity attribute knobs.
+
+        Deterministic by design: QPS moves hourly via fixed arithmetic
+        around the base (never faker) so emitted bytes are stable and the
+        consumer's mce_may_be_stale detection sees a moving native
+        observation against frozen MCE references.
+        """
+        cfg = dict(HCP_CAPACITY_DEFAULTS)
+        if self.hcp_capacity:
+            cfg.update(self.hcp_capacity)
+
+        qps_known = bool(cfg.get("ready_hcp_qps_known"))
+        qps = ""
+        if qps_known:
+            base = float(cfg.get("base_ready_hcp_qps"))
+            # Fixed +/-50 swing in 25-step increments keyed on the hour of
+            # day: consecutive hours differ, the series repeats per day.
+            qps = base + 25 * ((start.hour % 5) - 2)
+
+        observed_at = end.strftime("%Y-%m-%dT%H:%M:%SZ")
+        mce_sampled_at = cfg.get("mce_sampled_at") or observed_at
+
+        data = {
+            "observed_at": observed_at,
+            "mce_sampled_at": mce_sampled_at,
+            "operator_version": cfg.get("operator_version"),
+            "ocp_version": cfg.get("ocp_version"),
+            "mce_version": cfg.get("mce_version", ""),
+            # Contract-fixed: the backend parser rejects any other value.
+            "native_model_version": "hcp-published-sizing-v1",
+            "collection_interval_minutes": cfg.get("collection_interval_minutes"),
+            "upload_cycle_minutes": cfg.get("upload_cycle_minutes"),
+            "inventory_complete": str(bool(cfg.get("inventory_complete"))).lower(),
+            "current_hc_count": cfg.get("current_hc_count"),
+            "ready_hcp_count": cfg.get("ready_hcp_count"),
+            "average_ready_hcp_qps": qps,
+            "ready_hcp_qps_known": str(qps_known).lower(),
+            "hosted_availability_basis": cfg.get("hosted_availability_basis"),
+            "eligible_worker_cpu_allocatable_millicores": cfg.get("eligible_worker_cpu_allocatable_millicores"),
+            "eligible_worker_memory_allocatable_bytes": cfg.get("eligible_worker_memory_allocatable_bytes"),
+            "eligible_worker_max_pods": cfg.get("eligible_worker_max_pods"),
+            "worker_placement_known": str(bool(cfg.get("worker_placement_known"))).lower(),
+            "pressure_state": cfg.get("pressure_state"),
+            "mce_request_max_hcs": cfg.get("mce_request_max_hcs"),
+            "mce_low_qps_max_hcs": cfg.get("mce_low_qps_max_hcs"),
+            "mce_average_qps_max_hcs": cfg.get("mce_average_qps_max_hcs"),
+            "mce_medium_qps_max_hcs": cfg.get("mce_medium_qps_max_hcs"),
+            "mce_high_qps_max_hcs": cfg.get("mce_high_qps_max_hcs"),
+            "shared_infrastructure": str(bool(cfg.get("shared_infrastructure"))).lower(),
         }
         row.update(data)
         return row
