@@ -1,0 +1,70 @@
+---
+# W8 non-prod sleep-candidate fixture: MANAGEMENT payload (#727, #721
+# parity; consumes #726's manifest override).
+#
+# The management payload carries the three context facts the advisory
+# joins on the guest's cluster identity (ADR-0350):
+#   - the topology's hcpSnapshot entry declaring the guest HC non-prod
+#     (hcTier: non-prod, complete, observed recently — the marker keeps
+#     the fixture regenerable),
+#   - the NodePool rows (worker spec_replicas > 0 — the reclaim
+#     estimate's worker_node_count),
+#   - container rows in the association namespace (clusters-hc9) with
+#     ~500mC CP requests — the zombie still-on leg's evidence when this
+#     template is reused for zombie fixtures.
+#
+# hostedClusterID MUST equal the guest generation's --ocp-cluster-id.
+#
+#   nise report ocp --static-report-file ocp_report_w8_sleep_mgmt.yml \
+#     --ocp-cluster-id cccccccc-1111-1111-1111-111111111111 \
+#     --ros-ocp-info -w --insights-upload <scratch>/mgmt-extract
+#
+# Then copy the monthly ros-openshift-nodepool-*.csv and
+# *ocp_ros_usage*.csv beside the extracted manifest.json.
+generators:
+  - OCPGenerator:
+      start_date: last_month
+      end_date: today
+      nodes:
+        - node:
+          node_name: w8-mgmt-worker-1
+          cpu_cores: 16
+          memory_gig: 64
+          resource_id: 88001031
+          namespaces:
+            clusters-hc9:
+              pods:
+                - pod:
+                  pod_name: kube-apiserver
+                  cpu_request: 0.5
+                  cpu_limit: 1
+                  mem_request_gig: 2
+                  mem_limit_gig: 4
+                  pod_seconds: 3600
+                  cpu_usage:
+                    full_period: 0.05
+                  mem_usage_gig:
+                    full_period: 1.0
+                  workload: deployment
+      nodepool:
+        source: hypershift
+        pools:
+          - hc_cluster_id: bbbbbbbb-1111-1111-1111-111111111111
+            pool_name: workers
+            spec_replicas: 2
+            status_replicas: 2
+
+manifest:
+  cr_status:
+    topology:
+      hostedControlPlaneNamespaces:
+        - clusters-hc9
+      hcpSnapshot:
+        - hcpNamespace: clusters-hc9
+          hostedClusterID: bbbbbbbb-1111-1111-1111-111111111111
+          hcUID: uid-w8-hc-1
+          hcpUID: uid-w8-hcp-1
+          namespaceUID: uid-w8-ns-1
+          observedAt: now-30m
+          complete: true
+          hcTier: non-prod

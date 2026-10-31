@@ -31,6 +31,8 @@ from nise.generators.ocp.ocp_generator import OCP_ROS_VM_PVC  # noqa: F401
 from nise.generators.ocp.ocp_generator import OCP_ROS_VM_USAGE  # noqa: F401
 from nise.generators.ocp.ocp_generator import OCP_SNAPSHOT_INVENTORY  # noqa: F401
 from nise.generators.ocp.ocp_generator import OCP_HCP_CAPACITY  # noqa: F401
+from nise.generators.ocp.ocp_generator import OCP_HCP_NODEPOOL  # noqa: F401
+from nise.generators.ocp.ocp_generator import OCP_HCP_NODEPOOL_COLUMNS  # noqa: F401
 from nise.generators.ocp.ocp_vm_ros_generator import OCPVirtualMachineGenerator  # noqa: F401
 from nise.generators.ocp.ocp_generator import OCP_STORAGE_USAGE  # noqa: F401
 from nise.generators.ocp.ocp_generator import OCP_VM_USAGE  # noqa: F401

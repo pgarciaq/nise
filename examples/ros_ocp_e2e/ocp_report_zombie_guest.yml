@@ -1,0 +1,55 @@
+---
+# W3 zombie fixture: GUEST payload (#727, #722 parity).
+#
+# The idle leg needs zero active non-system workloads on every covered
+# day: the user workload reads 1mC (under the 10mC floor) around the
+# clock, while platform rows run busy (liveness + exclusion proof).
+# One busy user day vetoes — do not raise the user usage without
+# intending to test the veto.
+#
+#   nise report ocp --static-report-file ocp_report_zombie_guest.yml \
+#     --ocp-cluster-id bbbbbbbb-1111-1111-1111-111111111111 \
+#     --ros-ocp-info -w --insights-upload <scratch>/guest-extract
+#
+# For the standard 14d lane generate a ~15+ day window; for the short
+# lane (#674) a 3-day window suffices (the standard lane then reads
+# unknown — missing days are silence, never idle-by-absence).
+# # No pinned start/end: the window IS the variant (standard 14d lane vs
+# short 3d lane) — pass -s/-e on the CLI.
+generators:
+  - OCPGenerator:
+      nodes:
+        - node:
+          node_name: z-guest-worker-1
+          cpu_cores: 8
+          memory_gig: 32
+          resource_id: 88001041
+          namespaces:
+            z-demo-app:
+              pods:
+                - pod:
+                  pod_name: idle-web
+                  cpu_request: 0.1
+                  cpu_limit: 0.5
+                  mem_request_gig: 1
+                  mem_limit_gig: 2
+                  pod_seconds: 3600
+                  cpu_usage:
+                    full_period: 0.001
+                  mem_usage_gig:
+                    full_period: 0.2
+                  workload: deployment
+            kube-system:
+              pods:
+                - pod:
+                  pod_name: coredns
+                  cpu_request: 2
+                  cpu_limit: 2
+                  mem_request_gig: 2
+                  mem_limit_gig: 4
+                  pod_seconds: 3600
+                  cpu_usage:
+                    full_period: 2.0
+                  mem_usage_gig:
+                    full_period: 1.0
+                  workload: deployment

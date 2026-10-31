@@ -1,0 +1,70 @@
+---
+# W8 non-prod sleep-candidate fixture: GUEST payload (#727, #721 parity).
+#
+# The guest is the hosted cluster whose cluster ID is the HC identity
+# (N-leg convention). The sleep signature: the user workload is active in
+# business hours and idle outside — by_hour shaping (#727), the one shape
+# full_period cannot express (the outside-BH leg reads All-minus-BH, so
+# 24/7 usage would break the signature).
+#
+# Platform rows run busy 24/7 (pipeline liveness + the shared platform
+# exclusion proof: busy platform CPU never counts as user activity).
+#
+# Generate with the SAME cluster UUID as the management template's
+# hostedClusterID (see ocp_report_w8_sleep_mgmt.yml):
+#
+#   nise report ocp --static-report-file ocp_report_w8_sleep_guest.yml \
+#     --ocp-cluster-id bbbbbbbb-1111-1111-1111-111111111111 \
+#     --ros-ocp-info -w --insights-upload <scratch>/guest-extract
+#
+# Then copy the monthly *ocp_ros_usage*.csv beside the extracted
+# manifest.json (the payload renames files to undetectable assembly
+# names; the monthly file keeps the ocp_ros_usage substring robne
+# detects). robne config: business_hours 09:00-17:00 with ALL SEVEN
+# days — the by_hour shape is daily, so a weekday-only schedule would
+# read weekend usage as outside-BH activity and break the signature
+# (narrow the schedule only with a weekday-aware usage shape).
+generators:
+  - OCPGenerator:
+      start_date: last_month
+      end_date: today
+      nodes:
+        - node:
+          node_name: w8-guest-worker-1
+          node_labels: label_environment:nonprod|label_role:compute
+          cpu_cores: 8
+          memory_gig: 32
+          resource_id: 88001021
+          namespaces:
+            w8-demo-app:
+              namespace_labels: label_team:w8|label_bh_pattern:daytime
+              pods:
+                - pod:
+                  pod_name: web-frontend
+                  cpu_request: 2
+                  cpu_limit: 4
+                  mem_request_gig: 2
+                  mem_limit_gig: 4
+                  pod_seconds: 3600
+                  cpu_usage:
+                    by_hour:
+                      "9-17": 0.35
+                      default: 0.0002
+                  mem_usage_gig:
+                    full_period: 0.8
+                  labels: label_app:web-frontend|label_bh_pattern:daytime
+                  workload: deployment
+            kube-system:
+              pods:
+                - pod:
+                  pod_name: coredns
+                  cpu_request: 2
+                  cpu_limit: 2
+                  mem_request_gig: 2
+                  mem_limit_gig: 4
+                  pod_seconds: 3600
+                  cpu_usage:
+                    full_period: 2.0
+                  mem_usage_gig:
+                    full_period: 1.0
+                  workload: deployment

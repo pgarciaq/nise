@@ -59,6 +59,7 @@ OCP_ROS_VM_PVC = "ocp_ros_vm_pvc"
 OCP_GPU_USAGE = "ocp_gpu_usage"
 OCP_SNAPSHOT_INVENTORY = "ocp_snapshot_inventory"
 OCP_HCP_CAPACITY = "ros-openshift-hcp-capacity"
+OCP_HCP_NODEPOOL = "ros-openshift-nodepool"
 OCP_POD_USAGE_COLUMNS = (
     "report_period_start",
     "report_period_end",
@@ -423,6 +424,22 @@ OCP_HCP_CAPACITY_COLUMNS = (
     "shared_infrastructure",
 )
 
+# NodePool rollup columns (#727): the operator's hosted NodePool
+# emission, consumed by robne (librobne/csv/parse_nodepool.go) for the
+# W8 sleep advisory's worker-node facts and the zombie short lane's
+# parked-pool readings (#674).
+OCP_HCP_NODEPOOL_COLUMNS = (
+    "hc_cluster_id",
+    "pool_name",
+    "window_start",
+    "window_end",
+    "spec_replicas",
+    "status_replicas",
+    "autoscaling",
+    "collected_at",
+    "source",
+)
+
 # Default knobs reproduce the hand-verified healthy-fleet fixture from
 # ros-ocp-backend (librobne/hcp capacity_test.go): 64 vCPU / 128 GiB /
 # 1500 maxPods of eligible workers, 4 hosted clusters, 2 ready, base QPS
@@ -475,6 +492,7 @@ ROS_OCP_REPORT_TYPE_TO_COLS = {
     OCP_SNAPSHOT_INVENTORY: OCP_SNAPSHOT_INVENTORY_COLUMNS,
     OCP_STORAGE_USAGE: OCP_STORAGE_COLUMNS,
     OCP_HCP_CAPACITY: OCP_HCP_CAPACITY_COLUMNS,
+    OCP_HCP_NODEPOOL: OCP_HCP_NODEPOOL_COLUMNS,
 }
 
 DEFAULT_CLUSTER_RESOURCE_QUOTA_NAMES = ("team-frontend", "team-backend", "team-platform")
@@ -1052,6 +1070,7 @@ class OCPGenerator(AbstractGenerator):
         self.constant_values_ros_ocp = constant_values_ros_ocp
         self.ros_only = ros_only
         self.hcp_capacity = self._attributes.get("hcp_capacity")
+        self.hcp_nodepool = self._attributes.get("nodepool")
         if attributes:
             self._nodes = attributes.get("nodes")
 
@@ -1128,6 +1147,16 @@ class OCPGenerator(AbstractGenerator):
             },
         }
 
+        # NodePool rollups are management-cluster only: the file is
+        # emitted solely when the static YAML carries a nodepool block
+        # (attribute-gated, the capacity pattern).
+        nodepool_report = {
+            OCP_HCP_NODEPOOL: {
+                "_generate_hourly_data": self._gen_hcp_nodepool_rows,
+                "_update_data": self._update_hcp_nodepool_data,
+            },
+        }
+
         if self.ros_only:
             # ONLY ROS reports
             self.ocp_report_generation = ros_reports
@@ -1136,6 +1165,8 @@ class OCPGenerator(AbstractGenerator):
                 self.ocp_report_generation.update(snapshot_report)
                 if self.hcp_capacity is not None:
                     self.ocp_report_generation.update(hcp_capacity_report)
+                if self.hcp_nodepool is not None:
+                    self.ocp_report_generation.update(nodepool_report)
                 if self.volumes:
                     self.ocp_report_generation[OCP_STORAGE_USAGE] = {
                         "_generate_hourly_data": self._gen_hourly_storage_usage,
@@ -1173,6 +1204,8 @@ class OCPGenerator(AbstractGenerator):
                 self.snapshots = self._gen_snapshots()
                 self.ocp_report_generation.update(ros_reports)
                 self.ocp_report_generation.update(snapshot_report)
+                if self.hcp_nodepool is not None:
+                    self.ocp_report_generation.update(nodepool_report)
                 if self.hcp_capacity is not None:
                     self.ocp_report_generation.update(hcp_capacity_report)
 
@@ -1365,14 +1398,14 @@ class OCPGenerator(AbstractGenerator):
         cpu_limit = min(specified_pod.get("cpu_limit", cpu_cores), cpu_cores)
         cpu_request = min(specified_pod.get("cpu_request", round(uniform(0.02, cpu_limit), 5)), cpu_limit)
         cpu_usage = specified_pod.get("cpu_usage", {})
-        cpu_usage = {k: min(v, cpu_limit) for k, v in cpu_usage.items()}
+        cpu_usage = self._clamp_usage_dict(cpu_usage, cpu_limit)
         cpu_usage = self._pre_parse_usage_dates(cpu_usage)
 
         memory_gig = memory_bytes / GIGABYTE
         mem_limit_gig = min(specified_pod.get("mem_limit_gig", memory_gig), memory_gig)
         mem_request_gig = min(specified_pod.get("mem_request_gig", round(uniform(25.0, 80.0), 2)), mem_limit_gig)
         memory_usage_gig = specified_pod.get("mem_usage_gig", {})
-        memory_usage_gig = {k: min(v, mem_limit_gig) for k, v in memory_usage_gig.items()}
+        memory_usage_gig = self._clamp_usage_dict(memory_usage_gig, mem_limit_gig)
         memory_usage_gig = self._pre_parse_usage_dates(memory_usage_gig)
 
         pod = {
@@ -1890,14 +1923,62 @@ class OCPGenerator(AbstractGenerator):
         for key, value in usage_dict.items():
             if key == "full_period":
                 parsed[key] = value
+            elif key == "by_hour":
+                parsed[key] = OCPGenerator._parse_hour_ranges(value)
             else:
                 parsed[parser.parse(key).date()] = value
         return parsed
 
     @staticmethod
+    def _parse_hour_ranges(by_hour):
+        """Normalize a by_hour mapping into (hours, value) pairs + default.
+
+        Keys are hour ranges "9-17" (inclusive start, exclusive end,
+        midnight-wrapping allowed, e.g. "22-6"), single hours "3", or
+        "default" for unmatched hours (reading 0 when absent — explicit
+        idle). The W8 sleep-signature fixture shape: business-hours
+        active, outside idle.
+        """
+        if not isinstance(by_hour, dict):
+            raise ValueError("by_hour must be a mapping of hour ranges to values")
+        default = by_hour.get("default", 0)
+        ranges = []
+        for key, value in by_hour.items():
+            if key == "default":
+                continue
+            part = str(key)
+            if "-" in part:
+                lo_str, hi_str = part.split("-", 1)
+                lo, hi = int(lo_str), int(hi_str)
+                if not (0 <= lo <= 24 and 0 <= hi <= 24):
+                    raise ValueError(f"by_hour range {part!r} outside 0-24")
+                if lo <= hi:
+                    hours = frozenset(range(lo, hi))
+                else:
+                    hours = frozenset(range(lo, 24)) | frozenset(range(0, hi))
+            else:
+                hour = int(part)
+                if not 0 <= hour <= 23:
+                    raise ValueError(f"by_hour hour {part!r} outside 0-23")
+                hours = frozenset({hour})
+            ranges.append((hours, value))
+        return ranges, default
+
+    @staticmethod
     def _get_usage_for_date(usage_dict, start):
-        """Return usage for specified hour."""
+        """Return usage for specified hour.
+
+        Resolution order: by_hour (hour-of-day shaping), full_period,
+        then per-date keys.
+        """
         if usage_dict:
+            by_hour = usage_dict.get("by_hour")
+            if by_hour is not None:
+                ranges, default = by_hour
+                for hours, value in ranges:
+                    if start.hour in hours:
+                        return value
+                return default
             if "full_period" in usage_dict:
                 return usage_dict["full_period"]
             return usage_dict.get(start.date())
@@ -2032,12 +2113,40 @@ class OCPGenerator(AbstractGenerator):
                     pod_out[pod_key] = round(min(1.0, max(0.0, randomization_value * pod_value)), 4)
         return pod_out
 
+    @staticmethod
+    def _clamp_usage_dict(usage_dict, limit):
+        """Clamp usage values to the limit, recursing into by_hour."""
+        clamped = {}
+        for key, value in usage_dict.items():
+            if isinstance(value, dict):
+                clamped[key] = OCPGenerator._clamp_usage_dict(value, limit)
+            else:
+                clamped[key] = min(value, limit)
+        return clamped
+
     def _update_ros_ocp_pod_data(self, row, start, end, **kwargs):
         """Update data with generator specific data."""
         pod = kwargs.get("pod")
         if pod and not self.constant_values_ros_ocp:
             pod = self._randomize_ros_ocp_line_values(pod)
         row.update(pod)
+        # by_hour shaping (#727): resolve the hour's value at row time,
+        # overriding the per-pod constant placeholder (and the per-row
+        # randomization) with a deterministic figure. The W8 sleep
+        # signature needs business-hours-active / outside-idle workloads,
+        # which full_period cannot express.
+        cpu_usage = kwargs.get("cpu_usage")
+        if cpu_usage and "by_hour" in cpu_usage:
+            value = self._get_usage_for_date(cpu_usage, start)
+            if value is not None:
+                limit = pod.get("cpu_limit_container_avg") if pod else None
+                if limit:
+                    value = min(value, limit)
+                value = round(value, 5)
+                row["cpu_usage_container_avg"] = value
+                row["cpu_usage_container_min"] = value
+                row["cpu_usage_container_max"] = value
+                row["cpu_usage_container_sum"] = value
         return row
 
     def _update_storage_data(self, row, start, end, **kwargs):
@@ -2201,7 +2310,11 @@ class OCPGenerator(AbstractGenerator):
             for pod_name in pod_names:
                 for pod in self._ros_pod_gpu_variants(pod_name):
                     row = self._init_data_row(start, end, **kwargs)
-                    yield self._update_data(row, start, end, pod=pod, **kwargs)
+                    # cpu_usage rides along for by_hour shaping at row time
+                    # (#727) — the cost-path precedent (line ~2192).
+                    yield self._update_data(
+                        row, start, end, pod=pod, cpu_usage=self.pods[pod_name].get("cpu_usage"), **kwargs
+                    )
 
     def _aggregate_namespace_data(self, namespace, start, end):
         """Aggregate container data into namespace-level data."""
@@ -2885,6 +2998,50 @@ class OCPGenerator(AbstractGenerator):
             "mce_medium_qps_max_hcs": cfg.get("mce_medium_qps_max_hcs"),
             "mce_high_qps_max_hcs": cfg.get("mce_high_qps_max_hcs"),
             "shared_infrastructure": str(bool(cfg.get("shared_infrastructure"))).lower(),
+        }
+        row.update(data)
+        return row
+
+    def _gen_hcp_nodepool_rows(self, **kwargs):
+        """Generate NodePool rollup rows (one observation per hour per pool).
+
+        The monthly file accumulates hourly observations, mirroring the
+        operator: window_end is start + 59m59s (the KMO convention) and
+        collected_at rides the window end.
+        """
+        for hour in self.hours:
+            start = hour.get("start")
+            end = hour.get("end")
+            for pool in self.hcp_nodepool.get("pools", []):
+                row = self._init_data_row(start, end, **kwargs)
+                row = self._update_data(row, start, end, nodepool_pool=pool, **kwargs)
+                yield row
+
+    def _update_hcp_nodepool_data(self, row, start, end, **kwargs):
+        """Fill a NodePool row from the pool's knobs (deterministic, no faker).
+
+        Day overrides (0-based offsets from the generation start) model
+        the parked/mid-transition fixture shapes: spec=0 AND status=0
+        sustained is the #674 short-lane parked reading; a day with live
+        replicas is the mid-transition veto case.
+        """
+        pool = kwargs.get("nodepool_pool") or {}
+        spec = pool.get("spec_replicas", 0)
+        status = pool.get("status_replicas", spec)
+        for override in pool.get("day_overrides", []):
+            if override.get("day") == (start - self.start_date).days:
+                spec = override.get("spec_replicas", spec)
+                status = override.get("status_replicas", spec)
+        data = {
+            "hc_cluster_id": pool.get("hc_cluster_id"),
+            "pool_name": pool.get("pool_name"),
+            "window_start": start,
+            "window_end": end,
+            "spec_replicas": spec,
+            "status_replicas": status,
+            "autoscaling": pool.get("autoscaling", ""),
+            "collected_at": end.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "source": self.hcp_nodepool.get("source", "hypershift"),
         }
         row.update(data)
         return row

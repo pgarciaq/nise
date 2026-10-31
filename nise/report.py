@@ -87,6 +87,7 @@ from nise.generators.ocp import OCP_ROS_NAMESPACE_USAGE
 from nise.generators.ocp import OCP_ROS_CLUSTER_QUOTA
 from nise.generators.ocp import OCP_SNAPSHOT_INVENTORY
 from nise.generators.ocp import OCP_HCP_CAPACITY
+from nise.generators.ocp import OCP_HCP_NODEPOOL
 from nise.generators.ocp import OCP_ROS_VM_GPU_DEVICE
 from nise.generators.ocp import OCP_ROS_VM_PVC
 from nise.generators.ocp import OCP_ROS_VM_USAGE
@@ -934,12 +935,16 @@ def azure_create_report(options):  # noqa: C901
 
 def write_ocp_file(file_number, cluster_id, month_name, year, report_type, data):
     """Write OCP data to a file with unified standard naming format."""
-    if report_type == OCP_HCP_CAPACITY:
+    kmo_kinds = {
+        OCP_HCP_CAPACITY: "hcp-capacity",
+        OCP_HCP_NODEPOOL: "nodepool",
+    }
+    if report_type in kmo_kinds:
         # KMO contract: one monthly file named
-        # ros-openshift-hcp-capacity-YYYYMM.csv. The file carries no
-        # cluster id (identity comes from the payload manifest) and no
+        # ros-openshift-<kind>-YYYYMM.csv. The file carries no cluster
+        # id (identity comes from the payload manifest) and no
         # part-number suffix; the monthly accumulator is never split.
-        kind = "hcp-capacity"
+        kind = kmo_kinds[report_type]
         if file_number != 0:
             raise ValueError(
                 f"ros-openshift-{kind} is one file per month by contract; "
@@ -1062,6 +1067,7 @@ def ocp_create_report(options):  # noqa: C901
                 OCP_ROS_VM_PVC,
                 OCP_SNAPSHOT_INVENTORY,
                 OCP_HCP_CAPACITY,
+                OCP_HCP_NODEPOOL,
             ):
                 monthly_ros_files.append(month_output_file)
             else:

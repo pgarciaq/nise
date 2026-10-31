@@ -1,0 +1,67 @@
+---
+# W3 zombie SHORT-LANE fixture: MANAGEMENT payload (#727, #722, #674).
+#
+# The parked gate: every covered day of the short window reads
+# all-pools-zero (spec=0 AND status=0). The day_overrides entry below is
+# the MID-TRANSITION variant — uncommented it turns day 1 into a scaled
+# pool (spec=2, status=2), which vetoes the short lane (silence); with
+# it removed every day parks and the lane fires with lane:short-3d.
+#
+#   nise report ocp --static-report-file ocp_report_zombie_short_mgmt.yml \
+#     --ocp-cluster-id cccccccc-1111-1111-1111-111111111111 \
+#     --ros-ocp-info -w --insights-upload <scratch>/mgmt-extract
+#
+# Pair with ocp_report_zombie_guest.yml over a 3-day window. The
+# association namespaces carry ~500mC CP requests (still-on: high
+# confidence). The zombie needs no hcTier — the tier is the sleep
+# family's declaration, never the zombie's.
+# # No pinned start/end: pair with the guest window via -s/-e on the CLI.
+generators:
+  - OCPGenerator:
+      nodes:
+        - node:
+          node_name: z-mgmt-worker-1
+          cpu_cores: 16
+          memory_gig: 64
+          resource_id: 88001051
+          namespaces:
+            clusters-hc9:
+              pods:
+                - pod:
+                  pod_name: kube-apiserver
+                  cpu_request: 0.5
+                  cpu_limit: 1
+                  mem_request_gig: 2
+                  mem_limit_gig: 4
+                  pod_seconds: 3600
+                  cpu_usage:
+                    full_period: 0.05
+                  mem_usage_gig:
+                    full_period: 1.0
+                  workload: deployment
+      nodepool:
+        source: hypershift
+        pools:
+          - hc_cluster_id: bbbbbbbb-1111-1111-1111-111111111111
+            pool_name: workers
+            spec_replicas: 0
+            status_replicas: 0
+            # Mid-transition variant (day 1 scales — vetoes the lane):
+            # day_overrides:
+            #   - day: 1
+            #     spec_replicas: 2
+            #     status_replicas: 2
+
+manifest:
+  cr_status:
+    topology:
+      hostedControlPlaneNamespaces:
+        - clusters-hc9
+      hcpSnapshot:
+        - hcpNamespace: clusters-hc9
+          hostedClusterID: bbbbbbbb-1111-1111-1111-111111111111
+          hcUID: uid-z-hc-1
+          hcpUID: uid-z-hcp-1
+          namespaceUID: uid-z-ns-1
+          observedAt: now-1h
+          complete: true
