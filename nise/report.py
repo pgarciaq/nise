@@ -95,6 +95,7 @@ from nise.generators.ocp.ocp_generator import OCP_ROS_VM_GPU_DEVICE_COLUMNS
 from nise.generators.ocp.ocp_generator import OCP_ROS_VM_PVC_COLUMNS
 from nise.generators.ocp import OCPGenerator
 from nise.generators.ocp.ocp_vm_ros_generator import OCPVirtualMachineGenerator
+from nise.manifest import apply_manifest_cr_status_override
 from nise.manifest import aws_generate_manifest
 from nise.manifest import ocp_generate_manifest
 from nise.upload import gcp_bucket_to_dataset
@@ -938,13 +939,14 @@ def write_ocp_file(file_number, cluster_id, month_name, year, report_type, data)
         # ros-openshift-hcp-capacity-YYYYMM.csv. The file carries no
         # cluster id (identity comes from the payload manifest) and no
         # part-number suffix; the monthly accumulator is never split.
+        kind = "hcp-capacity"
         if file_number != 0:
             raise ValueError(
-                "ros-openshift-hcp-capacity is one file per month by contract; "
+                f"ros-openshift-{kind} is one file per month by contract; "
                 f"part number {file_number} is not allowed (lower the row limit)"
             )
         month_number = list(calendar.month_name).index(month_name)
-        file_name = f"ros-openshift-hcp-capacity-{year}{month_number:02d}"
+        file_name = f"ros-openshift-{kind}-{year}{month_number:02d}"
     elif file_number != 0:
         # Standard filename format for all report types
         file_name = f"{month_name}-{year}-{cluster_id}-{report_type}-{str(file_number)}"
@@ -1174,6 +1176,16 @@ def ocp_create_report(options):  # noqa: C901
                     "check_cycle": 1440,
                 },
             }
+            # #726: the template's manifest.cr_status override deep-merges
+            # over the hardcoded defaults; relative markers (now, now-30m)
+            # resolve against the generation clock so parity fixtures stay
+            # regenerable (generate today, consume today). No override
+            # means today's manifest, byte-identically.
+            static_cr_status = None
+            if static_report_data:
+                static_cr_status = (static_report_data.get("manifest") or {}).get("cr_status")
+            cr_status = apply_manifest_cr_status_override(cr_status, static_cr_status, datetime.now(UTC))
+
             manifest_values = {
                 "cluster_id": str(cluster_id),
                 "uuid": str(ocp_assembly_id),

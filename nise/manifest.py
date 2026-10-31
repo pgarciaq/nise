@@ -18,6 +18,8 @@
 
 import json
 import os
+import re
+from datetime import timedelta
 from uuid import uuid4
 
 import jinja2
@@ -113,3 +115,94 @@ def ocp_generate_manifest(template_data):
     """
     # template_data["cr_status"] = json.dumps(template_data["cr_status"], indent=2)
     return json.dumps(template_data, indent=2)
+
+
+# Manifest cr_status template override (#726). A static-report template
+# may carry a manifest.cr_status block that deep-merges over nise's
+# hardcoded defaults — the W8/advisory parity fixtures need
+# manifest.json files with cr_status.topology (hcpSnapshot entries
+# carrying hostedClusterID, complete, observedAt, hcTier; the operator
+# emission contract ros-ocp-backend's librobne/csv/manifest.go consumes).
+#
+# Relative markers: override string values shaped `now` or
+# `now-<n><s|m|h|d>` resolve against the generation clock (UTC, RFC3339
+# Z), so fixtures stay regenerable — generate today, consume today.
+# Future offsets are deliberately not part of the grammar (fixtures look
+# back); anything else passes through verbatim.
+
+_MARKER_RE = re.compile(r"^now(?:-(\d+)([smhd]))?$")
+
+_MARKER_UNITS = {
+    "s": lambda n: timedelta(seconds=n),
+    "m": lambda n: timedelta(minutes=n),
+    "h": lambda n: timedelta(hours=n),
+    "d": lambda n: timedelta(days=n),
+}
+
+
+def resolve_relative_markers(value, now):
+    """Recursively resolve `now` / `now-<n><unit>` strings against now.
+
+    Dicts and lists recurse; every other scalar passes through
+    unchanged. The result never aliases the input.
+
+    Args:
+        value: the override value (any YAML shape)
+        now (datetime): the resolution clock (aware, UTC)
+    Returns:
+        the value with markers resolved to RFC3339 Z timestamps
+    """
+    if isinstance(value, dict):
+        return {k: resolve_relative_markers(v, now) for k, v in value.items()}
+    if isinstance(value, list):
+        return [resolve_relative_markers(v, now) for v in value]
+    if isinstance(value, str):
+        match = _MARKER_RE.match(value)
+        if match:
+            resolved = now
+            if match.group(1):
+                resolved = now - _MARKER_UNITS[match.group(2)](int(match.group(1)))
+            return resolved.strftime("%Y-%m-%dT%H:%M:%SZ")
+        return value
+    return value
+
+
+def _deep_merge(base, override):
+    """Merge override into base: recursive on dicts, replacement otherwise.
+
+    Lists (hcpSnapshot entries) and scalars are replaced wholesale —
+    element-merging snapshot entries has no meaningful semantics.
+
+    Args:
+        base (dict): the hardcoded cr_status
+        override (dict): the template's manifest.cr_status
+    Returns:
+        dict: a new merged mapping (inputs never mutated)
+    """
+    merged = dict(base)
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _deep_merge(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def apply_manifest_cr_status_override(base_cr_status, override, now):
+    """Apply the template's manifest.cr_status override over the base.
+
+    Markers resolve before merging (only override values carry markers;
+    the base is already literal). A missing/empty override returns the
+    base unchanged — existing templates produce today's manifest
+    byte-identically.
+
+    Args:
+        base_cr_status (dict): the hardcoded cr_status block
+        override (dict | None): the template's manifest.cr_status
+        now (datetime): the marker resolution clock (aware, UTC)
+    Returns:
+        dict: the merged cr_status
+    """
+    if not override:
+        return base_cr_status
+    return _deep_merge(base_cr_status, resolve_relative_markers(override, now))
