@@ -1,0 +1,55 @@
+---
+# W5 api-tax fixture: SINGLE payload (#728, #724 parity).
+#
+# Cluster-scoped (no context payload, no HC attribution): the hottest
+# webhook on the primary payload's api-tax rows fires when its p99
+# >= 2.0s or its rejected rate >= 5%. The storming webhook concentrates
+# its final-hour mass at le=3.0 (p99 ~3s); the quiet webhook stays calm
+# and must produce no advisory.
+#
+#   nise report ocp --static-report-file ocp_report_apitax.yml \
+#     --ocp-cluster-id 3c3c3c3c-3333-4333-8333-333333333333 \
+#     -s <data-start> -e <data-end> --ros-ocp-info -w \
+#     --insights-upload <scratch>/extract
+#
+# Run robne with --now <data-end> (the fire window is the final hour).
+# No pinned start/end: any window works (a single day suffices).
+generators:
+  - OCPGenerator:
+      nodes:
+        - node:
+          node_name: tax-worker-1
+          cpu_cores: 8
+          memory_gig: 32
+          resource_id: 88001081
+          namespaces:
+            tax-demo-app:
+              pods:
+                - pod:
+                  pod_name: web
+                  cpu_request: 1
+                  cpu_limit: 2
+                  mem_request_gig: 2
+                  mem_limit_gig: 4
+                  pod_seconds: 3600
+                  cpu_usage:
+                    full_period: 0.2
+                  mem_usage_gig:
+                    full_period: 0.8
+                  workload: deployment
+      apitax:
+        source: kubernetes
+        webhooks:
+          - webhook_name: slow.mutating.example
+            le_buckets: [0.1, 0.5, 1.0, 2.0, 3.0, 10.0]
+            baseline_per_hour: 100
+            hot_final_hours: 1
+            hot_le: 3.0
+            hot_count: 1000
+            total_per_hour: 5000
+            rejected_per_hour: 10
+          - webhook_name: calm.validating.example
+            le_buckets: [0.1, 1.0]
+            baseline_per_hour: 50
+            total_per_hour: 1000
+            rejected_per_hour: 0

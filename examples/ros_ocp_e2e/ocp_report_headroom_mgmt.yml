@@ -1,0 +1,50 @@
+---
+# W2 headroom fixture: MANAGEMENT payload (#728, #723 parity; consumes
+# #726's manifest override).
+#
+# Carries the window-proof association (complete snapshot, observedAt
+# within the fire window's skew — the marker keeps it fresh against the
+# pinned --now) and the C leg's control-plane rows in the association
+# namespace: usage ~0.9 vs request ~1.0 cores (a >80% saturation ratio).
+#
+#   nise report ocp --static-report-file ocp_report_headroom_mgmt.yml \
+#     --ocp-cluster-id 2b2b2b2b-2222-4222-8222-222222222222 \
+#     -s <data-start> -e <data-end> --ros-ocp-info -w \
+#     --insights-upload <scratch>/mgmt-extract
+generators:
+  - OCPGenerator:
+      nodes:
+        - node:
+          node_name: hr-mgmt-worker-1
+          cpu_cores: 16
+          memory_gig: 64
+          resource_id: 88001071
+          namespaces:
+            clusters-hr9:
+              pods:
+                - pod:
+                  pod_name: kube-apiserver
+                  cpu_request: 1.0
+                  cpu_limit: 2
+                  mem_request_gig: 2
+                  mem_limit_gig: 4
+                  pod_seconds: 3600
+                  cpu_usage:
+                    full_period: 0.9
+                  mem_usage_gig:
+                    full_period: 1.5
+                  workload: deployment
+
+manifest:
+  cr_status:
+    topology:
+      hostedControlPlaneNamespaces:
+        - clusters-hr9
+      hcpSnapshot:
+        - hcpNamespace: clusters-hr9
+          hostedClusterID: 1a1a1a1a-1111-4111-8111-111111111111
+          hcUID: uid-hr-hc-1
+          hcpUID: uid-hr-hcp-1
+          namespaceUID: uid-hr-ns-1
+          observedAt: now-30m
+          complete: true

@@ -45,6 +45,8 @@ from nise.generators.ocp import (
     OCP_GPU_USAGE,
     OCP_HCP_CAPACITY,
     OCP_HCP_NODEPOOL,
+    OCP_HCP_SLO,
+    OCP_HCP_APITAX,
 )
 from nise.generators.ocp.ocp_generator import COST_OCP_REPORT_TYPE_TO_COLS
 from nise.generators.ocp.ocp_generator import OCP_REPORT_TYPE_TO_COLS
@@ -1071,7 +1073,12 @@ class OCPReportTestCase(TestCase):
         # an hcp_capacity block) and KMO-contract-named
         # (ros-openshift-hcp-capacity-YYYYMM.csv), so it never follows
         # the standard {month}-{year}-{cluster}-{type} pattern checked here.
-        for report_type in OCP_REPORT_TYPE_TO_COLS.keys() - {OCP_HCP_CAPACITY, OCP_HCP_NODEPOOL}:
+        for report_type in OCP_REPORT_TYPE_TO_COLS.keys() - {
+            OCP_HCP_CAPACITY,
+            OCP_HCP_NODEPOOL,
+            OCP_HCP_SLO,
+            OCP_HCP_APITAX,
+        }:
             month_output_file_name = f"{calendar.month_name[now.month]}-{now.year}-{cluster_id}-{report_type}"
             expected_month_output_file = f"{os.getcwd()}/{month_output_file_name}.csv"
             self.assertTrue(os.path.isfile(expected_month_output_file))
@@ -1140,7 +1147,12 @@ class OCPReportTestCase(TestCase):
         # an hcp_capacity block) and KMO-contract-named
         # (ros-openshift-hcp-capacity-YYYYMM.csv), so it never follows
         # the standard {month}-{year}-{cluster}-{type} pattern checked here.
-        for report_type in OCP_REPORT_TYPE_TO_COLS.keys() - {OCP_HCP_CAPACITY, OCP_HCP_NODEPOOL}:
+        for report_type in OCP_REPORT_TYPE_TO_COLS.keys() - {
+            OCP_HCP_CAPACITY,
+            OCP_HCP_NODEPOOL,
+            OCP_HCP_SLO,
+            OCP_HCP_APITAX,
+        }:
             month_output_file_name = f"{calendar.month_name[now.month]}-{now.year}-{cluster_id}-{report_type}"
             expected_month_output_file = f"{os.getcwd()}/{month_output_file_name}.csv"
             self.assertTrue(os.path.isfile(expected_month_output_file))
@@ -1169,7 +1181,12 @@ class OCPReportTestCase(TestCase):
         # an hcp_capacity block) and KMO-contract-named
         # (ros-openshift-hcp-capacity-YYYYMM.csv), so it never follows
         # the standard {month}-{year}-{cluster}-{type} pattern checked here.
-        for report_type in OCP_REPORT_TYPE_TO_COLS.keys() - {OCP_HCP_CAPACITY, OCP_HCP_NODEPOOL}:
+        for report_type in OCP_REPORT_TYPE_TO_COLS.keys() - {
+            OCP_HCP_CAPACITY,
+            OCP_HCP_NODEPOOL,
+            OCP_HCP_SLO,
+            OCP_HCP_APITAX,
+        }:
             month_output_file_name = f"{calendar.month_name[now.month]}-{now.year}-{cluster_id}-{report_type}"
             expected_month_output_file = f"{os.getcwd()}/{month_output_file_name}.csv"
             self.assertTrue(os.path.isfile(expected_month_output_file))
@@ -1198,7 +1215,12 @@ class OCPReportTestCase(TestCase):
         # an hcp_capacity block) and KMO-contract-named
         # (ros-openshift-hcp-capacity-YYYYMM.csv), so it never follows
         # the standard {month}-{year}-{cluster}-{type} pattern checked here.
-        for report_type in OCP_REPORT_TYPE_TO_COLS.keys() - {OCP_HCP_CAPACITY, OCP_HCP_NODEPOOL}:
+        for report_type in OCP_REPORT_TYPE_TO_COLS.keys() - {
+            OCP_HCP_CAPACITY,
+            OCP_HCP_NODEPOOL,
+            OCP_HCP_SLO,
+            OCP_HCP_APITAX,
+        }:
             month_output_file_name = f"{calendar.month_name[now.month]}-{now.year}-{cluster_id}-{report_type}"
             expected_month_output_file = f"{os.getcwd()}/{month_output_file_name}.csv"
             self.assertTrue(os.path.isfile(expected_month_output_file))

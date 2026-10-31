@@ -33,6 +33,10 @@ from nise.generators.ocp.ocp_generator import OCP_SNAPSHOT_INVENTORY  # noqa: F4
 from nise.generators.ocp.ocp_generator import OCP_HCP_CAPACITY  # noqa: F401
 from nise.generators.ocp.ocp_generator import OCP_HCP_NODEPOOL  # noqa: F401
 from nise.generators.ocp.ocp_generator import OCP_HCP_NODEPOOL_COLUMNS  # noqa: F401
+from nise.generators.ocp.ocp_generator import OCP_HCP_SLO  # noqa: F401
+from nise.generators.ocp.ocp_generator import OCP_HCP_SLO_COLUMNS  # noqa: F401
+from nise.generators.ocp.ocp_generator import OCP_HCP_APITAX  # noqa: F401
+from nise.generators.ocp.ocp_generator import OCP_HCP_APITAX_COLUMNS  # noqa: F401
 from nise.generators.ocp.ocp_vm_ros_generator import OCPVirtualMachineGenerator  # noqa: F401
 from nise.generators.ocp.ocp_generator import OCP_STORAGE_USAGE  # noqa: F401
 from nise.generators.ocp.ocp_generator import OCP_VM_USAGE  # noqa: F401

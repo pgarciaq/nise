@@ -48,6 +48,8 @@ nise report ocp --static-report-file examples/ros_ocp_e2e/ocp_report_gpu_mig.yml
 - `ocp_report_business_hours.yml` — Business hours vs all-hours comparison
 - `ocp_report_w8_sleep_guest.yml` / `ocp_report_w8_sleep_mgmt.yml` — W8 non-prod sleep-advisory parity fixture (the two-payload guest+management pair; #727)
 - `ocp_report_zombie_guest.yml` / `ocp_report_zombie_short_mgmt.yml` — W3 zombie parity fixtures (standard lane on a 14d+ window, pool-zero short lane on a 3d window with the mid-transition veto variant; #727)
+- `ocp_report_headroom_guest.yml` / `ocp_report_headroom_mgmt.yml` — W2 headroom parity fixture (hot SLO tail + saturated CP + calm nodes; #728)
+- `ocp_report_apitax.yml` — W5 api-tax parity fixture (storming + quiet webhooks, single payload; #728)
 - `ocp_report_ros_0.yml` — Basic ROS container data
 - `ocp_report_advanced.yml` / `ocp_report_advanced_daily.yml` — Advanced scenarios
 

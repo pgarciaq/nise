@@ -60,6 +60,8 @@ OCP_GPU_USAGE = "ocp_gpu_usage"
 OCP_SNAPSHOT_INVENTORY = "ocp_snapshot_inventory"
 OCP_HCP_CAPACITY = "ros-openshift-hcp-capacity"
 OCP_HCP_NODEPOOL = "ros-openshift-nodepool"
+OCP_HCP_SLO = "ros-openshift-slo"
+OCP_HCP_APITAX = "ros-openshift-apitax"
 OCP_POD_USAGE_COLUMNS = (
     "report_period_start",
     "report_period_end",
@@ -440,6 +442,36 @@ OCP_HCP_NODEPOOL_COLUMNS = (
     "source",
 )
 
+# SLO bucket rollup columns (#728): the operator's hosted API latency
+# histogram emission, consumed by robne (librobne/csv/parse_slo.go) for
+# the headroom H leg (#723) and the zombie API context.
+OCP_HCP_SLO_COLUMNS = (
+    "hc_cluster_id",
+    "window_start",
+    "window_end",
+    "verb_group",
+    "le",
+    "bucket_count",
+    "collected_at",
+    "source",
+)
+
+# API-tax rollup columns (#728): the operator's webhook latency/rejection
+# emission, consumed by robne (librobne/csv/parse_apitax.go) for the W5
+# advisory (#724). total/rejected are denormalized onto the +Inf row only
+# (empty strings elsewhere — never zero-filled).
+OCP_HCP_APITAX_COLUMNS = (
+    "webhook_name",
+    "window_start",
+    "window_end",
+    "le",
+    "bucket_count",
+    "total_count",
+    "rejected_count",
+    "collected_at",
+    "source",
+)
+
 # Default knobs reproduce the hand-verified healthy-fleet fixture from
 # ros-ocp-backend (librobne/hcp capacity_test.go): 64 vCPU / 128 GiB /
 # 1500 maxPods of eligible workers, 4 hosted clusters, 2 ready, base QPS
@@ -493,6 +525,8 @@ ROS_OCP_REPORT_TYPE_TO_COLS = {
     OCP_STORAGE_USAGE: OCP_STORAGE_COLUMNS,
     OCP_HCP_CAPACITY: OCP_HCP_CAPACITY_COLUMNS,
     OCP_HCP_NODEPOOL: OCP_HCP_NODEPOOL_COLUMNS,
+    OCP_HCP_SLO: OCP_HCP_SLO_COLUMNS,
+    OCP_HCP_APITAX: OCP_HCP_APITAX_COLUMNS,
 }
 
 DEFAULT_CLUSTER_RESOURCE_QUOTA_NAMES = ("team-frontend", "team-backend", "team-platform")
@@ -1071,6 +1105,8 @@ class OCPGenerator(AbstractGenerator):
         self.ros_only = ros_only
         self.hcp_capacity = self._attributes.get("hcp_capacity")
         self.hcp_nodepool = self._attributes.get("nodepool")
+        self.hcp_slo = self._attributes.get("slo")
+        self.hcp_apitax = self._attributes.get("apitax")
         if attributes:
             self._nodes = attributes.get("nodes")
 
@@ -1157,16 +1193,29 @@ class OCPGenerator(AbstractGenerator):
             },
         }
 
+        # SLO/api-tax rollups: attribute-gated like the others (the
+        # capacity pattern). One source value per config = one coherent
+        # histogram (the SLO amendment lesson).
+        slo_report = {
+            OCP_HCP_SLO: {
+                "_generate_hourly_data": self._gen_hcp_slo_rows,
+                "_update_data": self._update_hcp_slo_data,
+            },
+        }
+        apitax_report = {
+            OCP_HCP_APITAX: {
+                "_generate_hourly_data": self._gen_hcp_apitax_rows,
+                "_update_data": self._update_hcp_apitax_data,
+            },
+        }
+
         if self.ros_only:
             # ONLY ROS reports
             self.ocp_report_generation = ros_reports
             if self.ros_ocp_info:
                 self.snapshots = self._gen_snapshots()
                 self.ocp_report_generation.update(snapshot_report)
-                if self.hcp_capacity is not None:
-                    self.ocp_report_generation.update(hcp_capacity_report)
-                if self.hcp_nodepool is not None:
-                    self.ocp_report_generation.update(nodepool_report)
+                self._register_attribute_gated_reports(nodepool_report, slo_report, apitax_report, hcp_capacity_report)
                 if self.volumes:
                     self.ocp_report_generation[OCP_STORAGE_USAGE] = {
                         "_generate_hourly_data": self._gen_hourly_storage_usage,
@@ -1204,10 +1253,7 @@ class OCPGenerator(AbstractGenerator):
                 self.snapshots = self._gen_snapshots()
                 self.ocp_report_generation.update(ros_reports)
                 self.ocp_report_generation.update(snapshot_report)
-                if self.hcp_nodepool is not None:
-                    self.ocp_report_generation.update(nodepool_report)
-                if self.hcp_capacity is not None:
-                    self.ocp_report_generation.update(hcp_capacity_report)
+                self._register_attribute_gated_reports(nodepool_report, slo_report, apitax_report, hcp_capacity_report)
 
     @staticmethod
     def timestamp(in_date):
@@ -2934,6 +2980,21 @@ class OCPGenerator(AbstractGenerator):
         row.update(data)
         return row
 
+    def _register_attribute_gated_reports(self, nodepool_report, slo_report, apitax_report, hcp_capacity_report):
+        """Apply the attribute gates for the KMO-contract report types.
+
+        Each report type (nodepool, slo, apitax, hcp-capacity) emits only
+        when its static-YAML block is present — the capacity pattern.
+        """
+        if self.hcp_nodepool is not None:
+            self.ocp_report_generation.update(nodepool_report)
+        if self.hcp_slo is not None:
+            self.ocp_report_generation.update(slo_report)
+        if self.hcp_apitax is not None:
+            self.ocp_report_generation.update(apitax_report)
+        if self.hcp_capacity is not None:
+            self.ocp_report_generation.update(hcp_capacity_report)
+
     def _gen_hcp_capacity_rows(self, **kwargs):
         """Generate HCP fleet-capacity rows (one observation per hour).
 
@@ -3045,6 +3106,129 @@ class OCPGenerator(AbstractGenerator):
         }
         row.update(data)
         return row
+
+    def _gen_hcp_slo_rows(self, **kwargs):
+        """Generate SLO bucket rows: one cumulative snapshot per hour per le.
+
+        The +Inf row always rides along (the parser's contract). Fixed
+        arithmetic only — emitted bytes are stable.
+        """
+        for hour in self.hours:
+            start = hour.get("start")
+            end = hour.get("end")
+            for entry in self.hcp_slo.get("verb_groups", []):
+                for le in self._histogram_les(entry):
+                    row = self._init_data_row(start, end, **kwargs)
+                    row = self._update_data(row, start, end, slo_entry=entry, le=le, **kwargs)
+                    yield row
+
+    def _update_hcp_slo_data(self, row, start, end, **kwargs):
+        """Fill one SLO bucket row (cumulative histogram semantics).
+
+        Calm hours grow every le equally (all observations land below the
+        smallest bound); the final hot_final_hours concentrate hot_count
+        at hot_le and above. The hot tail lands in the FINAL hours of the
+        generation range — the consumer's fire window — with the previous
+        snapshot as the delta baseline. Do not "smooth" this: the two-
+        snapshot delta IS the fixture.
+        """
+        entry = kwargs.get("slo_entry") or {}
+        le = kwargs.get("le")
+        les = self._histogram_les(entry)
+        baseline = int(entry.get("baseline_per_hour", 0))
+        hour_index = self._hour_index(start)
+        hot_remaining = self._hot_hours_remaining(entry, hour_index)
+        count = baseline * (hour_index + 1)
+        if hot_remaining and self._le_covers(le, entry.get("hot_le"), les):
+            count += int(entry.get("hot_count", 0)) * self._hot_hours_so_far(entry, hour_index)
+        data = {
+            "hc_cluster_id": self.hcp_slo.get("hc_cluster_id"),
+            "window_start": start,
+            "window_end": end,
+            "verb_group": entry.get("verb_group"),
+            "le": le,
+            "bucket_count": count,
+            "collected_at": end.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "source": self.hcp_slo.get("source", "kubernetes"),
+        }
+        row.update(data)
+        return row
+
+    def _gen_hcp_apitax_rows(self, **kwargs):
+        """Generate api-tax rows: one cumulative snapshot per hour per le."""
+        for hour in self.hours:
+            start = hour.get("start")
+            end = hour.get("end")
+            for entry in self.hcp_apitax.get("webhooks", []):
+                for le in self._histogram_les(entry):
+                    row = self._init_data_row(start, end, **kwargs)
+                    row = self._update_data(row, start, end, apitax_entry=entry, le=le, **kwargs)
+                    yield row
+
+    def _update_hcp_apitax_data(self, row, start, end, **kwargs):
+        """Fill one api-tax row; totals denormalize onto the +Inf row only."""
+        entry = kwargs.get("apitax_entry") or {}
+        le = kwargs.get("le")
+        les = self._histogram_les(entry)
+        baseline = int(entry.get("baseline_per_hour", 0))
+        hour_index = self._hour_index(start)
+        hot_remaining = self._hot_hours_remaining(entry, hour_index)
+        count = baseline * (hour_index + 1)
+        if hot_remaining and self._le_covers(le, entry.get("hot_le"), les):
+            count += int(entry.get("hot_count", 0))
+        total = rejected = ""
+        if le == "+Inf":
+            total = int(entry.get("total_per_hour", 0)) * (hour_index + 1)
+            rejected = int(entry.get("rejected_per_hour", 0)) * (hour_index + 1)
+        data = {
+            "webhook_name": entry.get("webhook_name"),
+            "window_start": start,
+            "window_end": end,
+            "le": le,
+            "bucket_count": count,
+            "total_count": total,
+            "rejected_count": rejected,
+            "collected_at": end.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "source": self.hcp_apitax.get("source", "kubernetes"),
+        }
+        row.update(data)
+        return row
+
+    @staticmethod
+    def _histogram_les(entry):
+        """The finite bounds plus the +Inf overflow row, formatted as emitted."""
+        les = [str(float(le)) for le in entry.get("le_buckets", [])]
+        les.append("+Inf")
+        return les
+
+    def _hour_index(self, start):
+        """0-based hour offset from the generation start."""
+        return int((start - self.start_date).total_seconds() // 3600)
+
+    def _hot_hours_remaining(self, entry, hour_index):
+        """Whether this hour is inside the final hot window (1) or not (0)."""
+        hot = int(entry.get("hot_final_hours", 0))
+        if hot <= 0:
+            return 0
+        total_hours = len(self.hours)
+        return 1 if hour_index >= total_hours - hot else 0
+
+    def _hot_hours_so_far(self, entry, hour_index):
+        """Hot hours elapsed up to this one (cumulative hot mass)."""
+        hot = int(entry.get("hot_final_hours", 0))
+        if hot <= 0:
+            return 0
+        total_hours = len(self.hours)
+        return hour_index - (total_hours - hot) + 1
+
+    def _le_covers(self, le, hot_le, les):
+        """Whether le sits at or above the hot bound (hot mass lands there)."""
+        if le == "+Inf":
+            return True
+        try:
+            return float(le) >= float(hot_le)
+        except (TypeError, ValueError):
+            return False
 
     def _generate_hourly_data(self, **kwargs):
         """Create hourly data."""

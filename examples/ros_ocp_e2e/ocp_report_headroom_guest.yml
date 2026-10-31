@@ -1,0 +1,55 @@
+---
+# W2 headroom fixture: GUEST payload (#728, #723 parity).
+#
+# Carries the H leg's SLO buckets (identity-joined on hc_cluster_id ==
+# the guest's --ocp-cluster-id) and the container rows that feed the N
+# leg's node recommendations (calm nodes — no overcommitted or
+# scheduling-limited codes).
+#
+# The hot tail lands in the FINAL hour of the generation range — the
+# consumer's fire window when --now is pinned to the data end. The
+# previous hour's snapshot is the delta baseline; the 7 trailing days of
+# calm hourly snapshots chain the day-aggregated baselines. Do not
+# "smooth" the hot tail: the two-snapshot delta IS the fixture.
+#
+#   nise report ocp --static-report-file ocp_report_headroom_guest.yml \
+#     --ocp-cluster-id 1a1a1a1a-1111-4111-8111-111111111111 \
+#     -s <data-start> -e <data-end> --ros-ocp-info -w \
+#     --insights-upload <scratch>/guest-extract
+#
+# Pair with ocp_report_headroom_mgmt.yml; run robne with --now <data-end>.
+# No pinned start/end: an 8-day window covers the fire window plus the
+# 7-day baseline.
+generators:
+  - OCPGenerator:
+      nodes:
+        - node:
+          node_name: hr-guest-worker-1
+          cpu_cores: 8
+          memory_gig: 32
+          resource_id: 88001061
+          namespaces:
+            hr-demo-app:
+              pods:
+                - pod:
+                  pod_name: web
+                  cpu_request: 1
+                  cpu_limit: 2
+                  mem_request_gig: 2
+                  mem_limit_gig: 4
+                  pod_seconds: 3600
+                  cpu_usage:
+                    full_period: 0.2
+                  mem_usage_gig:
+                    full_period: 0.8
+                  workload: deployment
+      slo:
+        source: kubernetes
+        hc_cluster_id: 1a1a1a1a-1111-4111-8111-111111111111
+        verb_groups:
+          - verb_group: mutating
+            le_buckets: [0.1, 0.5, 1.0, 2.0, 3.0, 10.0]
+            baseline_per_hour: 100
+            hot_final_hours: 1
+            hot_le: 3.0
+            hot_count: 1000
