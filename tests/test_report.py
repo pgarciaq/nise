@@ -400,6 +400,9 @@ class MiscReportTestCase(TestCase):
         post_payload_to_ingest_service(insights_upload, temp_file.name)
         self.assertEqual(mock_post.call_args[1].get("headers"), headers)
         self.assertNotIn("auth", mock_post.call_args[1])
+        # #755: uploads verify TLS by default — no verify kwarg means
+        # requests' default (True). This branch was always correct.
+        self.assertNotIn("verify", mock_post.call_args[1])
 
     @patch.dict(os.environ, {"INSIGHTS_USER": "12345", "INSIGHTS_PASSWORD": "54321"})
     @patch("nise.report.requests.post")
@@ -420,6 +423,13 @@ class MiscReportTestCase(TestCase):
         post_payload_to_ingest_service(insights_upload, temp_file.name)
         self.assertEqual(mock_post.call_args[1].get("auth"), auth)
         self.assertNotIn("headers", mock_post.call_args[1])
+        # #755: uploads verify TLS by default — the credential-carrying
+        # branch must not disable verification (pre-fix: verify=False).
+        self.assertNotIn(
+            "verify",
+            mock_post.call_args[1],
+            "basic-auth upload must not disable TLS verification (#755)",
+        )
 
     @patch.dict(os.environ, {"HCC_SERVICE_ACCOUNT_ID": "12345", "HCC_SERVICE_ACCOUNT_SECRET": "54321"})
     @patch("nise.report.requests.post")
@@ -435,6 +445,14 @@ class MiscReportTestCase(TestCase):
 
         post_payload_to_ingest_service(insights_upload, temp_file.name)
         self.assertEqual(mock_post.call_args[1].get("data"), data)
+        # #755: BOTH the token acquisition and the upload verify TLS — the
+        # filed asymmetry (token verified, upload carrying it not) is closed.
+        for i, call in enumerate(mock_post.call_args_list):
+            self.assertNotIn(
+                "verify",
+                call[1],
+                f"bearer-flow call #{i} (token/upload) must not disable TLS verification (#755)",
+            )
 
     @patch.dict(os.environ, {"HCC_SERVICE_ACCOUNT_ID": "12345", "HCC_SERVICE_ACCOUNT_SECRET": "54321"})
     @patch("nise.report.requests.post")
@@ -452,6 +470,47 @@ class MiscReportTestCase(TestCase):
         with self.assertRaises(requests.exceptions.RequestException):
             post_payload_to_ingest_service("http://test-upload", temp_file.name)
 
+        os.remove(temp_file.name)
+
+    @patch.dict(os.environ, {"INSIGHTS_USER": "12345", "INSIGHTS_PASSWORD": "54321", "REQUESTS_VERIFY": "false"})
+    @patch("nise.report.requests.post")
+    def test_post_payload_warns_when_insecure(self, mock_post):
+        """#755: REQUESTS_VERIFY=false still functions (requests-native)
+        but nise visibly warns — the explicit, warned opt-in."""
+        temp_file = NamedTemporaryFile(mode="w", delete=False)
+        headers = ["col1", "col2"]
+        data = [{"col1": "r1c1", "col2": "r1c2"}, {"col1": "r2c1", "col2": "r2c2"}]
+        _write_csv(temp_file.name, data, headers)
+
+        with self.assertLogs("nise.util.log", level="WARNING") as logged:
+            post_payload_to_ingest_service({}, temp_file.name)
+        self.assertTrue(
+            any("verification is DISABLED" in msg for msg in logged.output),
+            f"the insecure-mode warning must fire (got: {logged.output})",
+        )
+        # The upload still proceeds via the requests-native env knob.
+        self.assertEqual(mock_post.call_count, 1)
+        os.remove(temp_file.name)
+
+    @patch.dict(os.environ, {"INSIGHTS_USER": "12345", "INSIGHTS_PASSWORD": "54321"})
+    @patch("nise.report.requests.post")
+    def test_post_payload_no_warning_when_verify_default(self, mock_post):
+        """#755: no insecure warning when REQUESTS_VERIFY is unset."""
+        temp_file = NamedTemporaryFile(mode="w", delete=False)
+        headers = ["col1", "col2"]
+        data = [{"col1": "r1c1", "col2": "r1c2"}, {"col1": "r2c1", "col2": "r2c2"}]
+        _write_csv(temp_file.name, data, headers)
+
+        try:
+            with self.assertLogs("nise.util.log", level="WARNING") as logged:
+                post_payload_to_ingest_service({}, temp_file.name)
+            self.assertFalse(
+                any("verification is DISABLED" in msg for msg in logged.output),
+                "no insecure warning when verification is on",
+            )
+        except AssertionError:
+            # assertLogs raises when NOTHING is logged — acceptable here.
+            pass
         os.remove(temp_file.name)
 
     @patch.dict(os.environ, {"INSIGHTS_USER": "12345", "INSIGHTS_PASSWORD": "54321"})

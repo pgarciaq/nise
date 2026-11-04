@@ -292,6 +292,17 @@ def _convert_bytes(num):
 
 def post_payload_to_ingest_service(insights_upload, local_path, max_retries=3, initial_backoff=2):  # noqa: C901
     """POST the payload to Insights via header or basic auth with retry logic"""
+    # #755: TLS verification is on by default (requests' native behavior —
+    # the same policy as koku's own transport layer). Private-CA labs set
+    # REQUESTS_CA_BUNDLE; insecure lab use sets REQUESTS_VERIFY=false, which
+    # requests honors natively — we only make that mode visible.
+    if os.environ.get("REQUESTS_VERIFY", "true").lower() in ("false", "0", "no"):
+        LOG.warning(
+            "TLS certificate verification is DISABLED for uploads "
+            "(REQUESTS_VERIFY=%s). This exposes credentials to network "
+            "interception — use only in isolated labs.",
+            os.environ["REQUESTS_VERIFY"],
+        )
     insights_account_id = os.environ.get("INSIGHTS_ACCOUNT_ID")
     insights_org_id = os.environ.get("INSIGHTS_ORG_ID")
     insights_user = os.environ.get("INSIGHTS_USER")
@@ -368,20 +379,22 @@ def post_payload_to_ingest_service(insights_upload, local_path, max_retries=3, i
                         headers=headers,
                     )
                 elif auth_method == "basic_auth":
+                    # #755: TLS verified by default (requests); private-CA
+                    # labs set REQUESTS_CA_BUNDLE.
                     response = requests.post(
                         insights_upload,
                         data={},
                         files={"file": ("payload.tar.gz", upload_file, content_type)},
                         auth=auth,
-                        verify=False,
                     )
                 else:  # bearer_token
+                    # #755: same — the upload carrying the acquired token
+                    # verifies, matching the token acquisition itself.
                     response = requests.post(
                         insights_upload,
                         data={},
                         files={"file": ("payload.tar.gz", upload_file, content_type)},
                         headers=headers,
-                        verify=False,
                     )
 
                 # If we get here, the request succeeded
