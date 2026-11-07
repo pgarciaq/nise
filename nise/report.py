@@ -980,6 +980,27 @@ def write_ocp_file(file_number, cluster_id, month_name, year, report_type, data)
     return full_file_name
 
 
+# The ROS-family report types routed to the ROS packaging list (#772): the
+# row-limit split classification and the end-of-month flush classification
+# must agree — a split part of a ROS type that lands on the cost list gets a
+# generic cost name and koku consumes it as a cost file, losing the rows.
+ROS_UPLOAD_REPORT_TYPES = frozenset(
+    (
+        OCP_ROS_USAGE,
+        OCP_ROS_NAMESPACE_USAGE,
+        OCP_ROS_CLUSTER_QUOTA,
+        OCP_ROS_VM_USAGE,
+        OCP_ROS_VM_GPU_DEVICE,
+        OCP_ROS_VM_PVC,
+        OCP_SNAPSHOT_INVENTORY,
+        OCP_HCP_CAPACITY,
+        OCP_HCP_NODEPOOL,
+        OCP_HCP_SLO,
+        OCP_HCP_APITAX,
+    )
+)
+
+
 def ocp_create_report(options):  # noqa: C901
     """Create a usage report file."""
     start_date = options.get("start_date")
@@ -1056,7 +1077,14 @@ def ocp_create_report(options):  # noqa: C901
                             report_type,
                             data[report_type],
                         )
-                        monthly_files.append(month_output_file)
+                        # #772 review finding: split parts of ROS-family
+                        # types must take the ROS path — the cost list gives
+                        # them generic names and koku consumes them as cost
+                        # files, silently losing the rows.
+                        if report_type in ROS_UPLOAD_REPORT_TYPES:
+                            monthly_ros_files.append(month_output_file)
+                        else:
+                            monthly_files.append(month_output_file)
                         data[report_type].clear()
 
         for report_type in flush_report_types:
@@ -1075,19 +1103,7 @@ def ocp_create_report(options):  # noqa: C901
                 report_type,
                 data[report_type],
             )
-            if report_type in (
-                OCP_ROS_USAGE,
-                OCP_ROS_NAMESPACE_USAGE,
-                OCP_ROS_CLUSTER_QUOTA,
-                OCP_ROS_VM_USAGE,
-                OCP_ROS_VM_GPU_DEVICE,
-                OCP_ROS_VM_PVC,
-                OCP_SNAPSHOT_INVENTORY,
-                OCP_HCP_CAPACITY,
-                OCP_HCP_NODEPOOL,
-                OCP_HCP_SLO,
-                OCP_HCP_APITAX,
-            ):
+            if report_type in ROS_UPLOAD_REPORT_TYPES:
                 monthly_ros_files.append(month_output_file)
             else:
                 monthly_files.append(month_output_file)
@@ -1162,7 +1178,23 @@ def ocp_create_report(options):  # noqa: C901
                         yearmonth_part = f"{datetime.now().year}{datetime.now().month:02d}"
                     temp_filename = f"cm-openshift-snapshot-inventory-{yearmonth_part}.{current_file_number}.csv"
                 else:
-                    temp_filename = f"{ocp_assembly_id}_openshift_report.{current_file_number}.csv"
+                    # #772 (V15-22): preserve the family identity with the
+                    # assembly-id prefix. Every remaining ROS-family report
+                    # type's monthly name already carries a token ROS's
+                    # DetermineCSVType recognizes via its contains phase
+                    # (ros-openshift-<kind>-YYYYMM for the KMO-contract HCP
+                    # quartet; ...-ocp_ros_usage / -ocp_ros_vm_gpu_device /
+                    # -ocp_ros_vm_pvc[-N] for the container and companions) —
+                    # the generic rename erased seven families' identity and
+                    # the server marked them done without ingestion. The
+                    # assembly-id prefix (review findings) keeps each upload's
+                    # names unique: koku's ROS S3 key is source/date/filename
+                    # without the manifest id, so bare monthly names would let
+                    # a same-day re-upload overwrite the earlier object; and
+                    # the shared packaging temp dir would collide across
+                    # concurrent nise runs. Split parts carry their own
+                    # numbers, so names stay unique within the payload.
+                    temp_filename = f"{ocp_assembly_id}-{os.path.basename(original_file)}"
                 temp_ros_files[temp_filename] = create_temporary_copy(
                     monthly_ros_files[num_file], temp_filename, "payload"
                 )
