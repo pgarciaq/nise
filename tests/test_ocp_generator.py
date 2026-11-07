@@ -379,16 +379,260 @@ class OCPGeneratorTestCase(TestCase):
         # _gen_pods must include all 3 pods (pod-a1 from alpha, pod-b1 and
         # pod-b2 from beta) — the pre-fix code lost pod-a1.
         pod_names = set(generator.pods.keys())
-        self.assertIn("pod-a1", pod_names, "pod from node-alpha's shared-ns must be present")
-        self.assertIn("pod-b1", pod_names, "pod from node-beta's shared-ns must be present")
-        self.assertIn("pod-b2", pod_names, "pod from node-beta's shared-ns must be present")
-        self.assertIn("pod-alpha-only", pod_names, "pod from only-on-alpha must be present")
+        self.assertIn("shared-ns/pod-a1", pod_names, "pod from node-alpha's shared-ns must be present")
+        self.assertIn("shared-ns/pod-b1", pod_names, "pod from node-beta's shared-ns must be present")
+        self.assertIn("shared-ns/pod-b2", pod_names, "pod from node-beta's shared-ns must be present")
+        self.assertIn("only-on-alpha/pod-alpha-only", pod_names, "pod from only-on-alpha must be present")
 
         # Verify node assignment: pod-a1 should be on node-alpha,
         # pod-b1/pod-b2 should be on node-beta
-        self.assertEqual(generator.pods["pod-a1"]["node"], "node-alpha")
-        self.assertEqual(generator.pods["pod-b1"]["node"], "node-beta")
-        self.assertEqual(generator.pods["pod-b2"]["node"], "node-beta")
+        self.assertEqual(generator.pods["shared-ns/pod-a1"]["node"], "node-alpha")
+        self.assertEqual(generator.pods["shared-ns/pod-b1"]["node"], "node-beta")
+        self.assertEqual(generator.pods["shared-ns/pod-b2"]["node"], "node-beta")
+
+    def _same_named_pod_attributes(self, order=("ns-a", "ns-b")):
+        """One node, two namespaces that each declare a pod named "web".
+
+        Kubernetes pod names are namespace-scoped, so ns-a/web and ns-b/web are
+        two distinct pods.  Every fact differs per namespace (CPU limit/usage,
+        GPU model, PVC) so an overwrite is observable in values, not only in a
+        row count.
+
+        See https://github.com/pgarciaq/ros-ocp-backend/issues/775
+        """
+        facts = {
+            "ns-a": {
+                "cpu_request": 1,
+                "cpu_limit": 2,
+                "mem_request_gig": 2,
+                "mem_limit_gig": 4,
+                "cpu_usage": {"full_period": 0.2},
+                "mem_usage_gig": {"full_period": 2},
+                "gpu_model": "Tesla T4",
+                "gpu_memory_capacity_mib": 15360,
+                "volume_name": "vol-a",
+                "volume_claim_name": "claim-a",
+            },
+            "ns-b": {
+                "cpu_request": 2,
+                "cpu_limit": 4,
+                "mem_request_gig": 4,
+                "mem_limit_gig": 8,
+                "cpu_usage": {"full_period": 0.8},
+                "mem_usage_gig": {"full_period": 4},
+                "gpu_model": "A100",
+                "gpu_memory_capacity_mib": 40960,
+                "volume_name": "vol-b",
+                "volume_claim_name": "claim-b",
+            },
+        }
+        namespaces = {}
+        for namespace in order:
+            fact = facts[namespace]
+            namespaces[namespace] = {
+                "pods": [
+                    {
+                        "pod_name": "web",
+                        "cpu_request": fact["cpu_request"],
+                        "cpu_limit": fact["cpu_limit"],
+                        "mem_request_gig": fact["mem_request_gig"],
+                        "mem_limit_gig": fact["mem_limit_gig"],
+                        "cpu_usage": fact["cpu_usage"],
+                        "mem_usage_gig": fact["mem_usage_gig"],
+                        "gpus": [
+                            {
+                                "gpu_model": fact["gpu_model"],
+                                "gpu_memory_capacity_mib": fact["gpu_memory_capacity_mib"],
+                            }
+                        ],
+                    }
+                ],
+                "volumes": [
+                    {
+                        "volume_name": fact["volume_name"],
+                        "volume_request_gig": 10,
+                        "volume_claims": [
+                            {
+                                "volume_claim_name": fact["volume_claim_name"],
+                                "pod_name": "web",
+                                "capacity_gig": 5,
+                            }
+                        ],
+                    }
+                ],
+            }
+        return {
+            "nodes": [
+                {
+                    "node_name": "node-1",
+                    "cpu_cores": 16,
+                    "memory_gig": 64,
+                    "namespaces": namespaces,
+                }
+            ]
+        }
+
+    def test_same_named_pods_in_distinct_namespaces_stay_distinct(self):
+        """Pods named "web" in two namespaces must not overwrite each other.
+
+        Before the fix the pod/ROS maps were keyed by pod name alone, so
+        ns-a/web was dropped and every pod row reported ns-b.  See #775.
+        """
+        start = datetime(2026, 10, 1)
+        generator = OCPGenerator(
+            start,
+            start + timedelta(days=1),
+            self._same_named_pod_attributes(),
+            ros_ocp_info=True,
+            constant_values_ros_ocp=True,
+        )
+
+        self.assertEqual(set(generator.pods), {"ns-a/web", "ns-b/web"})
+        self.assertEqual(set(generator.ros_data), {"ns-a/web", "ns-b/web"})
+        self.assertEqual(set(generator.gpus), {"ns-a/web", "ns-b/web"})
+
+        # The CSV-facing pod column keeps the raw name.
+        self.assertEqual(generator.pods["ns-a/web"]["pod"], "web")
+        self.assertEqual(generator.pods["ns-b/web"]["pod"], "web")
+
+        # Values are attributed to the namespace that declared them.
+        self.assertEqual(generator.pods["ns-a/web"]["cpu_limit"], 2)
+        self.assertEqual(generator.pods["ns-b/web"]["cpu_limit"], 4)
+        self.assertAlmostEqual(generator.ros_data["ns-a/web"]["cpu_usage_container_avg"], 0.2)
+        self.assertAlmostEqual(generator.ros_data["ns-b/web"]["cpu_usage_container_avg"], 0.8)
+
+        # One day = 96 quarter-hours; two pods => 192 container rows.
+        ros_rows = list(generator.generate_data(OCP_ROS_USAGE))
+        self.assertEqual(len(ros_rows), 192)
+        self.assertEqual({(row["namespace"], row["pod"]) for row in ros_rows}, {("ns-a", "web"), ("ns-b", "web")})
+        cpu_by_namespace = {}
+        for row in ros_rows:
+            cpu_by_namespace.setdefault(row["namespace"], set()).add(row["cpu_usage_container_avg"])
+        self.assertEqual(cpu_by_namespace, {"ns-a": {0.2}, "ns-b": {0.8}})
+
+        # The namespace report must contain both namespaces, one pod each.
+        namespace_rows = list(generator.generate_data(OCP_ROS_NAMESPACE_USAGE))
+        self.assertEqual(len(namespace_rows), 192)
+        pods_per_namespace = {}
+        for row in namespace_rows:
+            pods_per_namespace.setdefault(row["namespace"], set()).add(row["namespace_total_pods_max"])
+        self.assertEqual(pods_per_namespace, {"ns-a": {1}, "ns-b": {1}})
+
+        # 24 hours * 2 pods.
+        pod_rows = list(generator.generate_data(OCP_POD_USAGE))
+        self.assertEqual(len(pod_rows), 48)
+        self.assertEqual({(row["namespace"], row["pod"]) for row in pod_rows}, {("ns-a", "web"), ("ns-b", "web")})
+
+    def test_same_named_pods_have_namespaced_gpu_identity(self):
+        """GPU identity and CSV rows must stay per-namespace for same-named pods."""
+        start = datetime(2026, 10, 1)
+        generator = OCPGenerator(
+            start,
+            start + timedelta(days=1),
+            self._same_named_pod_attributes(),
+            ros_ocp_info=True,
+            constant_values_ros_ocp=True,
+        )
+
+        self.assertEqual(generator.gpus["ns-a/web"][0]["gpu_model_name"], "Tesla T4")
+        self.assertEqual(generator.gpus["ns-b/web"][0]["gpu_model_name"], "A100")
+        self.assertNotEqual(
+            generator.gpus["ns-a/web"][0]["gpu_uuid"],
+            generator.gpus["ns-b/web"][0]["gpu_uuid"],
+            "GPU UUID seed must include the namespace",
+        )
+
+        # 24 hours * 2 pods * 1 GPU.
+        gpu_rows = list(generator.generate_data(OCP_GPU_USAGE))
+        self.assertEqual(len(gpu_rows), 48)
+        self.assertEqual({(row["namespace"], row["pod"]) for row in gpu_rows}, {("ns-a", "web"), ("ns-b", "web")})
+        self.assertEqual(len({row["gpu_uuid"] for row in gpu_rows}), 2)
+        model_by_namespace = {}
+        for row in gpu_rows:
+            model_by_namespace.setdefault(row["namespace"], set()).add(row["gpu_model_name"])
+        self.assertEqual(model_by_namespace, {"ns-a": {"Tesla T4"}, "ns-b": {"A100"}})
+
+    def test_same_named_pods_keep_separate_pvc_attribution(self):
+        """PVC lookup and storage rows must resolve per namespace, not per name."""
+        start = datetime(2026, 10, 1)
+        generator = OCPGenerator(
+            start,
+            start + timedelta(days=1),
+            self._same_named_pod_attributes(),
+            ros_ocp_info=True,
+            constant_values_ros_ocp=True,
+        )
+
+        self.assertEqual(set(generator.pod_pvc_map), {"ns-a/web", "ns-b/web"})
+        pvc_a, claim_a = generator.get_specific_pvc_from_pod(namespace="ns-a", pod_name="web")
+        pvc_b, claim_b = generator.get_specific_pvc_from_pod(namespace="ns-b", pod_name="web")
+        self.assertEqual(pvc_a, "claim-a")
+        self.assertEqual(pvc_b, "claim-b")
+        self.assertEqual(claim_a["namespace"], "ns-a")
+        self.assertEqual(claim_b["namespace"], "ns-b")
+
+        storage_rows = list(generator.generate_data(OCP_STORAGE_USAGE))
+        self.assertEqual(len(storage_rows), 48)
+        self.assertEqual(
+            {(row["namespace"], row["pod"], row["persistentvolumeclaim"]) for row in storage_rows},
+            {("ns-a", "web", "claim-a"), ("ns-b", "web", "claim-b")},
+        )
+
+    def test_same_named_pods_reversed_declaration_order_preserves_attribution(self):
+        """Declaring ns-b first must not swap which namespace owns which facts."""
+        start = datetime(2026, 10, 1)
+        generator = OCPGenerator(
+            start,
+            start + timedelta(days=1),
+            self._same_named_pod_attributes(order=("ns-b", "ns-a")),
+            ros_ocp_info=True,
+            constant_values_ros_ocp=True,
+        )
+
+        self.assertEqual(set(generator.pods), {"ns-a/web", "ns-b/web"})
+        self.assertEqual(set(generator.gpus), {"ns-a/web", "ns-b/web"})
+        self.assertEqual(generator.pods["ns-a/web"]["node"], "node-1")
+        self.assertEqual(generator.pods["ns-b/web"]["node"], "node-1")
+        self.assertAlmostEqual(generator.ros_data["ns-a/web"]["cpu_usage_container_avg"], 0.2)
+        self.assertAlmostEqual(generator.ros_data["ns-b/web"]["cpu_usage_container_avg"], 0.8)
+        self.assertEqual(generator.gpus["ns-a/web"][0]["gpu_model_name"], "Tesla T4")
+        self.assertEqual(generator.gpus["ns-b/web"][0]["gpu_model_name"], "A100")
+
+    def test_duplicate_pod_identity_in_one_generator_raises(self):
+        """The same namespace+pod on two nodes cannot be represented; fail loudly.
+
+        Kubernetes pod names are unique within a namespace, so last-wins would
+        hide a broken fixture.  See #775 decision D2.
+        """
+
+        def node(node_name):
+            return {
+                "node_name": node_name,
+                "cpu_cores": 8,
+                "memory_gig": 32,
+                "namespaces": {
+                    "shared-ns": {
+                        "pods": [
+                            {
+                                "pod_name": "web",
+                                "cpu_request": 1,
+                                "mem_request_gig": 2,
+                                "cpu_limit": 2,
+                                "mem_limit_gig": 4,
+                            }
+                        ]
+                    }
+                },
+            }
+
+        attributes = {"nodes": [node("node-1"), node("node-2")]}
+
+        with self.assertRaises(ValueError) as raised:
+            OCPGenerator(self.two_hours_ago, self.now, attributes)
+        message = str(raised.exception)
+        self.assertIn("shared-ns/web", message)
+        self.assertIn("node-1", message)
+        self.assertIn("node-2", message)
 
     def test_gen_nodes_with_nodes(self):
         """Test that gen_nodes arranges the output dict in the expected way.
@@ -1074,7 +1318,7 @@ class OCPGeneratorTestCase(TestCase):
             result = generator.get_vm_disk(specified_vc=specified_vc, pod_name="ignored-pod")
 
             # Should call with priority-pod, not ignored-pod
-            mock_get_pvc.assert_called_once_with("priority-pod")
+            mock_get_pvc.assert_called_once_with(namespace="", pod_name="priority-pod")
 
             expected = {
                 "vm_device": "rootdisk",
@@ -1099,7 +1343,7 @@ class OCPGeneratorTestCase(TestCase):
             result = generator.get_vm_disk(specified_vc=specified_vc, pod_name="param-pod")
 
             # Should call with param-pod
-            mock_get_pvc.assert_called_once_with("param-pod")
+            mock_get_pvc.assert_called_once_with(namespace="", pod_name="param-pod")
 
             expected = {
                 "vm_device": "testdisk",
@@ -1631,8 +1875,8 @@ class OCPGeneratorTestCase(TestCase):
         }
         generator = OCPGenerator(self.two_hours_ago, self.now, gpu_attributes)
         self.assertIsNotNone(generator.gpus)
-        self.assertIn("gpu-pod", generator.gpus)
-        pod_gpus = generator.gpus["gpu-pod"]
+        self.assertIn("gpu-namespace/gpu-pod", generator.gpus)
+        pod_gpus = generator.gpus["gpu-namespace/gpu-pod"]
         self.assertEqual(len(pod_gpus), 2)
         self.assertEqual(pod_gpus[0]["gpu_model_name"], "Tesla T4")
         self.assertEqual(pod_gpus[0]["gpu_memory_capacity_mib"], 15360)
@@ -1644,8 +1888,8 @@ class OCPGeneratorTestCase(TestCase):
     def test_gen_gpus_yaml_with_mig_instances(self):
         """Test GPU generation with MIG instances from YAML."""
         generator = OCPGenerator(self.two_hours_ago, self.now, self._mig_gpu_attributes())
-        self.assertIn("mig-pod", generator.gpus)
-        pod_gpus = generator.gpus["mig-pod"]
+        self.assertIn("mig-namespace/mig-pod", generator.gpus)
+        pod_gpus = generator.gpus["mig-namespace/mig-pod"]
         self.assertEqual(len(pod_gpus), 1)
         gpu = pod_gpus[0]
         self.assertEqual(gpu["gpu_model_name"], "H100")
@@ -1707,7 +1951,7 @@ class OCPGeneratorTestCase(TestCase):
             ]
         }
         generator = OCPGenerator(self.two_hours_ago, self.now, attrs)
-        pod_gpus = generator.gpus["triple-mig-pod"]
+        pod_gpus = generator.gpus["ns/triple-mig-pod"]
         self.assertEqual(len(pod_gpus), 3)
         physical_uuids = {g["gpu_uuid"] for g in pod_gpus}
         self.assertEqual(len(physical_uuids), 1)
@@ -2309,7 +2553,7 @@ class OCPGeneratorTestCase(TestCase):
             if pod_data.get("pod") == "training-pod":
                 found = True
                 self.assertEqual(pod_data["accelerator_model_name"], "A100")
-                expected_uuid = f"GPU-{uuid5(NAMESPACE_DNS, 'nise.ocp.gpu.gpu-node.training-pod.0')}"
+                expected_uuid = f"GPU-{uuid5(NAMESPACE_DNS, 'nise.ocp.gpu.gpu-node.ml-ns.training-pod.0')}"
                 self.assertEqual(pod_data["gpu_uuid"], expected_uuid)
                 self.assertEqual(pod_data["node_allocatable_gpu_count"], 1)
                 self.assertIsInstance(pod_data["accelerator_frame_buffer_usage_avg"], float)
@@ -2387,7 +2631,7 @@ class OCPGeneratorTestCase(TestCase):
             ]
         }
         generator = OCPGenerator(self.two_hours_ago, self.now, attributes, ros_ocp_info=True)
-        pod_data = generator.ros_data["api"]
+        pod_data = generator.ros_data["app-ns/api"]
         self.assertEqual(pod_data["node_allocatable_cpu_cores"], 7.5)
         self.assertEqual(pod_data["node_allocatable_memory_bytes"], 30 * GIGABYTE)
         self.assertEqual(pod_data["instance_type"], "m5.2xlarge")
@@ -2431,14 +2675,16 @@ class OCPGeneratorTestCase(TestCase):
             ]
         }
         generator = OCPGenerator(self.two_hours_ago, self.now, attributes, ros_ocp_info=True)
-        expected_uuids = {f"GPU-{uuid5(NAMESPACE_DNS, f'nise.ocp.gpu.gpu-node.multi-gpu-pod.{i}')}" for i in range(4)}
-        first_uuid = f"GPU-{uuid5(NAMESPACE_DNS, 'nise.ocp.gpu.gpu-node.multi-gpu-pod.0')}"
-        self.assertEqual(len(generator.gpus["multi-gpu-pod"]), 4)
+        expected_uuids = {
+            f"GPU-{uuid5(NAMESPACE_DNS, f'nise.ocp.gpu.gpu-node.ml-ns.multi-gpu-pod.{i}')}" for i in range(4)
+        }
+        first_uuid = f"GPU-{uuid5(NAMESPACE_DNS, 'nise.ocp.gpu.gpu-node.ml-ns.multi-gpu-pod.0')}"
+        self.assertEqual(len(generator.gpus["ml-ns/multi-gpu-pod"]), 4)
         ros_templates = [p for p in generator.ros_data.values() if p.get("pod") == "multi-gpu-pod"]
         self.assertEqual(len(ros_templates), 1, "ros_data must stay one entry per pod")
         self.assertEqual(ros_templates[0]["gpu_uuid"], first_uuid)
         self.assertEqual(ros_templates[0]["node_allocatable_gpu_count"], 4)
-        sidecar = generator.ros_data["cpu-sidecar"]
+        sidecar = generator.ros_data["ml-ns/cpu-sidecar"]
         self.assertEqual(sidecar["gpu_uuid"], "")
         self.assertEqual(sidecar["node_allocatable_gpu_count"], 4)
 
@@ -2502,8 +2748,8 @@ class OCPGeneratorTestCase(TestCase):
             ]
         }
         generator = OCPGenerator(self.two_hours_ago, self.now, attributes, ros_ocp_info=True)
-        self.assertEqual(len(generator.gpus["triple-mig-pod"]), 3)
-        physical_uuids = {g["gpu_uuid"] for g in generator.gpus["triple-mig-pod"]}
+        self.assertEqual(len(generator.gpus["ns/triple-mig-pod"]), 3)
+        physical_uuids = {g["gpu_uuid"] for g in generator.gpus["ns/triple-mig-pod"]}
         self.assertEqual(len(physical_uuids), 1)
         physical_uuid = next(iter(physical_uuids))
         ros_csv = list(generator.generate_data(OCP_ROS_USAGE))

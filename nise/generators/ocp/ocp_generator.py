@@ -1037,6 +1037,21 @@ def vm_name_from_virt_launcher_pod(pod):
     return stripped
 
 
+def pod_key(namespace, pod_name):
+    """Namespace-qualified identity for pods and every map keyed by pod.
+
+    Pod names are unique only within a namespace, so two namespaces may each
+    run a pod called "web". Maps keyed by pod name alone (pods, ros_data,
+    gpus, pod_pvc_map, vm_pod_map values) silently overwrite one of them; the
+    namespace-qualified key keeps both. Kubernetes DNS labels cannot contain
+    "/", so the separator is unambiguous. CSV-facing ``pod`` columns keep the
+    raw name.
+
+    See https://github.com/pgarciaq/ros-ocp-backend/issues/775
+    """
+    return f"{namespace}/{pod_name}"
+
+
 def machineset_name_from_node(node_name):
     """Derive MachineSet name from node hostname (e.g. worker-0 -> worker, infra-1 -> infra)."""
     if not node_name:
@@ -1150,6 +1165,7 @@ class OCPGenerator(AbstractGenerator):
         self.vms, self.namespace2vm = self._gen_virtual_machines(self.namespaces)
         self.gpus = self._gen_gpus()
         self._enrich_ros_data_with_gpus()
+        self._assert_pod_identity_maps_consistent()
 
         ros_reports = {
             OCP_ROS_USAGE: {
@@ -1558,16 +1574,22 @@ class OCPGenerator(AbstractGenerator):
                 specified_pods = node.get("namespaces").get(namespace).get("pods") or []
                 for specified_pod in specified_pods:
                     pod_name, pod, ros_pod = self._gen_specific_pod(node, namespace, specified_pod)
+                    key = pod_key(namespace, pod_name)
+                    if key in pods:
+                        raise ValueError(
+                            f"duplicate pod identity {key!r}: pod {pod_name!r} in namespace {namespace!r} "
+                            f"is declared on nodes {pods[key].get('node')!r} and {node.get('name')!r}"
+                        )
                     namespace2pod[namespace].append(pod_name)
-                    pods[pod_name] = pod
-                    ros_ocp_data_pods[pod_name] = ros_pod
+                    pods[key] = pod
+                    ros_ocp_data_pods[key] = ros_pod
 
                     # add pods that are labeled as a VM to the list of VMs
                     if vm := get_vm_from_label(specified_pod.get("labels", "")):
                         vms = node["namespaces"][namespace].get("virtual_machines") or []
                         vm_names = {v.get("vm_name") for v in vms}
                         if vm not in self.vm_pod_map:
-                            self.vm_pod_map[vm] = pod_name
+                            self.vm_pod_map[vm] = key
                         if vm in vm_names:
                             continue
                         pod_copy = copy.deepcopy(specified_pod)
@@ -1582,6 +1604,7 @@ class OCPGenerator(AbstractGenerator):
                     pod_suffix = "".join(choices(ascii_lowercase, k=5))
                     pod_type = choice(("build", "deploy", pod_suffix))
                     pod_name = f"{self.fake.word()}_{pod_type}"
+                    key = pod_key(namespace, pod_name)
                     namespace2pod[namespace].append(pod_name)
                     cpu_cores = node.get("cpu_cores")
                     cpu_limit = round(uniform(0.02, cpu_cores), 5)
@@ -1591,7 +1614,7 @@ class OCPGenerator(AbstractGenerator):
                     mem_limit_gig = round(uniform(25.0, memory_gig), 2)
                     mem_request_gig = round(uniform(25.0, mem_limit_gig), 2)
 
-                    pods[pod_name] = {
+                    pods[key] = {
                         "namespace": namespace,
                         "node": node.get("name"),
                         "resource_id": node.get("resource_id"),
@@ -1616,7 +1639,7 @@ class OCPGenerator(AbstractGenerator):
                     memory_rss_ratio = 1 / round(uniform(1.01, 1.9), 2)
                     cpu_throttle = choices([0, round(cpu_usage_avg / randint(10, 20), 5)], weights=(3, 1))[0]
 
-                    ros_ocp_data_pods[pod_name] = {
+                    ros_ocp_data_pods[key] = {
                         "namespace": namespace,
                         "node": node.get("name"),
                         "resource_id": node.get("resource_id"),
@@ -1698,7 +1721,8 @@ class OCPGenerator(AbstractGenerator):
             total_claims += claim_capacity
             if total_claims > volume_request:
                 raise ValueError(f"Total claims {total_claims} is greater than volume request {volume_request}")
-            self.pod_pvc_map[pod] = vol_claim
+            if pod:
+                self.pod_pvc_map[pod_key(namespace, pod)] = vol_claim
         return volume, {
             "node": node.get("name"),
             "namespace": namespace,
@@ -1744,7 +1768,7 @@ class OCPGenerator(AbstractGenerator):
                             "pod": pod,
                         }
                         total_claims += claim_capacity
-                        self.pod_pvc_map[pod] = vol_claim
+                        self.pod_pvc_map[pod_key(namespace, pod)] = vol_claim
                     storage_class_default, csi_default = get_storage_class_and_driver()
                     volumes.append(
                         {
@@ -1763,8 +1787,9 @@ class OCPGenerator(AbstractGenerator):
                     )
         return volumes
 
-    def get_specific_pvc_from_pod(self, pod_name):
-        if not (pvc := self.pod_pvc_map.get(pod_name)):
+    def get_specific_pvc_from_pod(self, *, namespace, pod_name):
+        """Return (claim_name, claim) for a pod, resolved within its namespace."""
+        if not (pvc := self.pod_pvc_map.get(pod_key(namespace, pod_name))):
             return "", {}
         for volume in self.volumes:
             for vol_name, vol in volume.items():
@@ -1772,14 +1797,14 @@ class OCPGenerator(AbstractGenerator):
                     return pvc, specific_pvc
         return "", {}
 
-    def get_vm_disk(self, *, specified_vc=None, pod_name="", static_report=False):
+    def get_vm_disk(self, *, specified_vc=None, pod_name="", namespace="", static_report=False):
         specified_vc = specified_vc or {}
         vm_disk = {
             "vm_device": specified_vc.get("vol_device") or "rootdisk",
             "vm_volume_mode": specified_vc.get("volume_mode") or "Block",
         }
         if _pod_name := specified_vc.get("pod_name") or pod_name:
-            pvc_name, pvc = self.get_specific_pvc_from_pod(_pod_name)
+            pvc_name, pvc = self.get_specific_pvc_from_pod(namespace=namespace, pod_name=_pod_name)
             if pvc_name and pvc:
                 vm_disk |= {
                     "vm_persistentvolumeclaim_name": pvc_name,
@@ -1853,7 +1878,7 @@ class OCPGenerator(AbstractGenerator):
                             "vm_seconds": specified_vm.get("vm_seconds"),
                         }
                         | get_vm_instance(vm=specified_vm)
-                        | self.get_vm_disk(specified_vc=specified_vm, static_report=True)
+                        | self.get_vm_disk(specified_vc=specified_vm, namespace=namespace, static_report=True)
                     )
                     vm_to_node[vm] = node
 
@@ -1889,7 +1914,7 @@ class OCPGenerator(AbstractGenerator):
                             "vm_labels": self._gen_openshift_labels(),
                         }
                         | get_vm_instance()
-                        | self.get_vm_disk(pod_name=vm)
+                        | self.get_vm_disk(pod_name=vm, namespace=namespace)
                     )
                     vm_to_node[vm] = node
 
@@ -1905,8 +1930,9 @@ class OCPGenerator(AbstractGenerator):
                     if pod_seconds := vm_copy.get("vm_seconds"):
                         vm_copy["pod_seconds"] = pod_seconds
                     pod_name, pod, ros_pod = self._gen_specific_pod(node, namespace, vm_copy)
-                    self.pods[pod_name] = pod
-                    self.ros_data[pod_name] = ros_pod
+                    key = pod_key(namespace, pod_name)
+                    self.pods[key] = pod
+                    self.ros_data[key] = ros_pod
                     self.namespace2pods[namespace].append(pod_name)
                 vcm = vm_copy.get("vm_persistentvolumeclaim_name")
                 if vcm and vcm not in self.pod_pvc_map.values():
@@ -2621,15 +2647,17 @@ class OCPGenerator(AbstractGenerator):
         """Create GPUs for pods and nodes that need them."""
         gpus = {}
         for pod_name, pod_data in self.pods.items():
+            namespace = pod_data.get("namespace") or "random"
+            bare_pod_name = pod_data.get("pod") or pod_name
             if not self._nodes:
-                # Random generation: 10% of pods get GPUs - stable UUID per (node, pod, index)
+                # Random generation: 10% of pods get GPUs - stable UUID per (node, namespace, pod, index)
                 if randint(1, 10) == 1:
                     node_name = pod_data.get("node") or "random"
                     num_gpus = choice([1, 2, 4, 8])
                     pod_gpus = []
                     for gpu_idx in range(num_gpus):
                         gpu_model = choice(GPU_MODELS)
-                        name = f"nise.ocp.gpu.{node_name}.{pod_name}.{gpu_idx}"
+                        name = f"nise.ocp.gpu.{node_name}.{namespace}.{bare_pod_name}.{gpu_idx}"
                         gpu_uuid = f"GPU-{uuid5(NAMESPACE_DNS, name)}"
                         pod_gpus.append(
                             {
@@ -2646,8 +2674,8 @@ class OCPGenerator(AbstractGenerator):
             if not node or not node.get("namespaces"):
                 continue
 
-            ns_data = node.get("namespaces", {}).get(pod_data.get("namespace"), {})
-            pod_spec = next((p for p in ns_data.get("pods", []) if p.get("pod_name") == pod_name), None)
+            ns_data = node.get("namespaces", {}).get(namespace, {})
+            pod_spec = next((p for p in ns_data.get("pods", []) if p.get("pod_name") == bare_pod_name), None)
             if not pod_spec or not pod_spec.get("gpus"):
                 continue
 
@@ -2655,7 +2683,7 @@ class OCPGenerator(AbstractGenerator):
             pod_gpus = []
             for gpu_idx, gpu_spec in enumerate(pod_spec.get("gpus")):
                 gpu_model = gpu_spec.get("gpu_model", choice(GPU_MODELS))
-                name = f"nise.ocp.gpu.{node_name}.{pod_name}.{gpu_idx}"
+                name = f"nise.ocp.gpu.{node_name}.{namespace}.{bare_pod_name}.{gpu_idx}"
                 parent_gpu_uuid = f"GPU-{uuid5(NAMESPACE_DNS, name)}"
                 gpu_memory = gpu_spec.get("gpu_memory_capacity_mib", _get_fb_total_mib(gpu_model))
                 mig_instances = gpu_spec.get("mig_instances", [])
@@ -2684,7 +2712,7 @@ class OCPGenerator(AbstractGenerator):
                     mig_strategy = mig_spec.get("mig_strategy")
                     if not all([mig_profile, mig_strategy]):
                         raise ValueError(f"MIG instance for pod '{pod_name}' requires mig_profile and mig_strategy")
-                    mig_name = f"nise.ocp.mig.{node_name}.{pod_name}.{gpu_idx}.{mig_idx}"
+                    mig_name = f"nise.ocp.mig.{node_name}.{namespace}.{bare_pod_name}.{gpu_idx}.{mig_idx}"
                     mig_partition_id = self._resolve_mig_partition_id(
                         pod_name, mig_name, mig_spec.get("mig_instance_id")
                     )
@@ -2769,6 +2797,19 @@ class OCPGenerator(AbstractGenerator):
             else:
                 ros_pod.update(_EMPTY_GPU_METRICS)
 
+    def _assert_pod_identity_maps_consistent(self):
+        """Pod-derived maps must all use the namespace-qualified identity.
+
+        A divergence means one map was keyed by a bare pod name again and the
+        same-named-pod overwrite (#775) can come back silently.
+        """
+        if set(self.ros_data) != set(self.pods):
+            missing = sorted(set(self.pods) - set(self.ros_data))
+            extra = sorted(set(self.ros_data) - set(self.pods))
+            raise ValueError(f"pods/ros_data identity mismatch: missing from ros_data {missing}, unexpected {extra}")
+        if not set(self.gpus) <= set(self.pods):
+            raise ValueError(f"gpus reference unknown pod identities: {sorted(set(self.gpus) - set(self.pods))}")
+
     def _gen_hourly_gpu_usage(self, **kwargs):
         """Create hourly data for GPU usage."""
         for hour in self.hours:
@@ -2796,7 +2837,7 @@ class OCPGenerator(AbstractGenerator):
                         end,
                         node=node,
                         namespace=namespace,
-                        pod=pod_name,
+                        pod=pod_data.get("pod"),
                         gpu_uuid=gpu["gpu_uuid"],
                         gpu_model_name=gpu["gpu_model_name"],
                         gpu_vendor_name=gpu["gpu_vendor_name"],
