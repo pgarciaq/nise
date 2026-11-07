@@ -196,6 +196,35 @@ example the same namespace on two nodes) is rejected with a `ValueError`
 instead of silently keeping the last one. See
 [#775](https://github.com/pgarciaq/ros-ocp-backend/issues/775).
 
+### Namespace usage aggregation
+
+`ocp_ros_namespace_usage` has one row per namespace per interval, and that row
+is the **aggregate of the container rows `ocp_ros_usage` emitted for the same
+interval**. The pods pass accumulates the namespace sums as it emits, and the
+namespace pass writes them out, so the two files always agree:
+
+- `*_namespace_sum` is the sum of the container sums (requests/limits).
+- `cpu_usage_namespace_avg`, `memory_usage_namespace_avg`,
+  `memory_rss_usage_namespace_avg` and `cpu_throttle_namespace_avg` are sums of
+  the container averages — a namespace with two 0.5-core pods reports 1 core,
+  not 0.5.
+- `*_namespace_max` and `*_namespace_min` are sums of the container maxima and
+  minima. They are **bounds** on the true within-interval namespace extreme
+  (pods rarely peak together), not sampled peaks. Consumers use them for
+  digest/boxplot diagnostics, never for quota sizing, so the high-side bound is
+  the safe direction.
+- `cpu_throttle_namespace_min` is the sum of the container minima (it used to
+  be `min()` over the per-pod *averages*, which is not a minimum of anything).
+
+A pod with several `gpus:` still emits one row per device but is counted **once**
+in its namespace row, so multi-GPU pods do not multiply CPU/memory. Generating
+`ocp_ros_namespace_usage` on its own (without the pods pass) has no emitted
+rows to aggregate: it falls back to resolving each pod's base value for the
+interval — `by_hour` shaping included, per-row randomization not reproducible —
+and sums those. The CLI always runs the pods pass first. See
+[#773](https://github.com/pgarciaq/ros-ocp-backend/issues/773) and
+ADR-0356 in `ros-ocp-backend`.
+
 
 ## OCP-on-Cloud reports
 
