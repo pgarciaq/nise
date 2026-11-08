@@ -45,6 +45,7 @@ from nise.generators.ocp.ocp_generator import OCP_ROS_CLUSTER_QUOTA_COLUMN
 from nise.generators.ocp.ocp_generator import OCP_ROS_NAMESPACE_USAGE
 from nise.generators.ocp.ocp_generator import OCP_ROS_NAMESPACE_USAGE_COLUMN
 from nise.generators.ocp.ocp_generator import cluster_quota_hard_and_used_values
+from nise.generators.ocp.ocp_generator import namespace_quota_used_values
 from nise.generators.ocp.ocp_generator import OCP_ROS_USAGE
 from nise.generators.ocp.ocp_generator import OCP_ROS_USAGE_COLUMN
 from nise.generators.ocp.ocp_generator import OCP_STORAGE_COLUMNS
@@ -1797,6 +1798,35 @@ class OCPGeneratorTestCase(TestCase):
         self.assertEqual(result["cpu_limit_namespace_used"], 5.0)
         self.assertEqual(result["memory_request_namespace_used"], 6 * 1024 * 1024 * 1024)
         self.assertEqual(result["memory_limit_namespace_used"], 12 * 1024 * 1024 * 1024)
+
+    def test_namespace_quota_used_values_gig_wins_over_bytes(self):
+        """A `_gig` spelling beats its byte-named counterpart, as in every other quota value."""
+        values = namespace_quota_used_values(
+            {
+                "memory_request_used_gig": 4,
+                "memory_request_used": 1,
+                "memory_limit_used_gig": 8,
+                "memory_limit_used": 1,
+            },
+            0,
+            0,
+            0,
+            0,
+        )
+        self.assertEqual(values["memory_request_namespace_used"], 4 * 1024**3)
+        self.assertEqual(values["memory_limit_namespace_used"], 8 * 1024**3)
+
+    def test_namespace_quota_used_values_accepts_bytes_without_gig(self):
+        """Control: the byte spelling is still honoured when it is the only one given."""
+        values = namespace_quota_used_values(
+            {"memory_request_used": 5 * 1024**3, "memory_limit_used": 10 * 1024**3},
+            0,
+            0,
+            0,
+            0,
+        )
+        self.assertEqual(values["memory_request_namespace_used"], 5 * 1024**3)
+        self.assertEqual(values["memory_limit_namespace_used"], 10 * 1024**3)
 
     def test_gpu_usage_in_report_type_to_cols(self):
         """Test that GPU usage is in the report type mapping."""

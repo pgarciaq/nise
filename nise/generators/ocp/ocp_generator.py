@@ -777,6 +777,19 @@ def get_owner_workload(pod, workload=None):
     return pod, ok, pod, wt
 
 
+def _quota_bytes(quota_config, gig_key, byte_key, default):
+    """Return a byte value; the `_gig` spelling wins when both keys are present.
+
+    This is the single place the byte/GiB precedence lives for quota values:
+    `_gig` is GiB (multiplied by 1024^3) and beats the byte-named key, matching
+    the convention `memory_request_hard_gig` has always had.
+    """
+    gig_value = quota_config.get(gig_key)
+    if gig_value is not None:
+        return float(gig_value) * GIGABYTE
+    return float(quota_config.get(byte_key, default))
+
+
 def _quota_cpu_used_value(quota_config, config_key, pod_sum, standalone_range, constant_values):
     if config_key in quota_config:
         return round(float(quota_config[config_key]), 5)
@@ -788,11 +801,14 @@ def _quota_cpu_used_value(quota_config, config_key, pod_sum, standalone_range, c
 
 
 def _quota_memory_used_value(quota_config, config_key, pod_sum, standalone_gig_range, constant_values):
-    if config_key in quota_config:
-        value = quota_config[config_key]
-        if config_key.endswith("_gig"):
-            return round(float(value) * GIGABYTE, 5)
-        return round(float(value), 5)
+    """Return a used memory value from YAML, else derived from pod usage.
+
+    `config_key` is the `_gig` spelling; its byte-named counterpart is accepted
+    too and `_quota_bytes` settles which one wins when both are present.
+    """
+    byte_key = config_key.removesuffix("_gig")
+    if config_key in quota_config or byte_key in quota_config:
+        return round(_quota_bytes(quota_config, config_key, byte_key, 0), 5)
     if pod_sum > 0:
         ratio = 0.5 if constant_values else uniform(0.4, 0.95)
         return round(ratio * pod_sum, 5)
@@ -821,11 +837,6 @@ def namespace_quota_used_values(
     memory_limit_used = _quota_memory_used_value(
         quota_config, "memory_limit_used_gig", memory_limit_sum, (0.5, 16.0), constant_values_ros_ocp
     )
-
-    if "memory_request_used" in quota_config:
-        memory_request_used = round(float(quota_config["memory_request_used"]), 5)
-    if "memory_limit_used" in quota_config:
-        memory_limit_used = round(float(quota_config["memory_limit_used"]), 5)
 
     if "cpu_request_used" not in quota_config and cpu_request_sum > 0:
         cpu_request_used = min(cpu_request_used, cpu_request_sum)
@@ -888,30 +899,17 @@ def cluster_quota_used_ratio(quota_config, hard_key, used_key, constant_values_r
     return uniform(0.3, 0.85)
 
 
-def _quota_bytes(quota_config, gig_key, byte_key, default):
-    """Return a byte value from a `_gig` or byte key (`_gig` wins when both are set)."""
-    gig_value = quota_config.get(gig_key)
-    if gig_value is not None:
-        return float(gig_value) * GIGABYTE
-    return float(quota_config.get(byte_key, default))
-
-
 def cluster_quota_hard_and_used_values(quota_config, constant_values_ros_ocp=False):
     """Return ClusterResourceQuota hard and used values (CPU cores, memory bytes)."""
     cpu_request_hard = float(quota_config.get("cpu_request_hard", randint(10, 50)))
     cpu_limit_hard = float(quota_config.get("cpu_limit_hard", cpu_request_hard * 2))
 
-    memory_request_hard_gig = quota_config.get("memory_request_hard_gig")
-    if memory_request_hard_gig is not None:
-        memory_request_hard = float(memory_request_hard_gig) * GIGABYTE
-    else:
-        memory_request_hard = float(quota_config.get("memory_request_hard", randint(20, 100) * GIGABYTE))
-
-    memory_limit_hard_gig = quota_config.get("memory_limit_hard_gig")
-    if memory_limit_hard_gig is not None:
-        memory_limit_hard = float(memory_limit_hard_gig) * GIGABYTE
-    else:
-        memory_limit_hard = float(quota_config.get("memory_limit_hard", memory_request_hard * 2))
+    memory_request_hard = _quota_bytes(
+        quota_config, "memory_request_hard_gig", "memory_request_hard", randint(20, 100) * GIGABYTE
+    )
+    memory_limit_hard = _quota_bytes(
+        quota_config, "memory_limit_hard_gig", "memory_limit_hard", memory_request_hard * 2
+    )
 
     cpu_request_ratio = cluster_quota_used_ratio(
         quota_config, "cpu_request_hard", "cpu_request_used", constant_values_ros_ocp
@@ -936,28 +934,33 @@ def cluster_quota_hard_and_used_values(quota_config, constant_values_ros_ocp=Fal
     else:
         cpu_limit_used = round(cpu_limit_hard * cpu_limit_ratio, 5)
 
-    if "memory_request_used" in quota_config:
-        memory_request_used = float(quota_config["memory_request_used"])
-    elif "memory_request_used_gig" in quota_config:
-        memory_request_used = round(float(quota_config["memory_request_used_gig"]) * GIGABYTE, 5)
-    else:
-        memory_request_used = round(memory_request_hard * memory_request_ratio, 5)
-
-    if "memory_limit_used" in quota_config:
-        memory_limit_used = float(quota_config["memory_limit_used"])
-    elif "memory_limit_used_gig" in quota_config:
-        memory_limit_used = round(float(quota_config["memory_limit_used_gig"]) * GIGABYTE, 5)
-    else:
-        memory_limit_used = round(memory_limit_hard * memory_limit_ratio, 5)
+    memory_request_used = round(
+        _quota_bytes(
+            quota_config,
+            "memory_request_used_gig",
+            "memory_request_used",
+            memory_request_hard * memory_request_ratio,
+        ),
+        5,
+    )
+    memory_limit_used = round(
+        _quota_bytes(
+            quota_config,
+            "memory_limit_used_gig",
+            "memory_limit_used",
+            memory_limit_hard * memory_limit_ratio,
+        ),
+        5,
+    )
 
     cpu_request_used = min(cpu_request_used, cpu_request_hard)
     cpu_limit_used = min(cpu_limit_used, cpu_limit_hard)
     memory_request_used = min(memory_request_used, memory_request_hard)
     memory_limit_used = min(memory_limit_used, memory_limit_hard)
 
-    # Storage follows the memory convention: the `_gig` spelling wins when both
-    # are present, so a human-authored fixture can stay in GiB while computed
-    # values keep their exact byte form.
+    # Storage obeys the same `_quota_bytes` rule as memory: a `_gig` spelling
+    # wins over the byte-named key, so a hand-authored fixture can stay in GiB
+    # while computed values keep their exact byte form.
     storage_request_hard = _quota_bytes(
         quota_config, "storage_request_hard_gig", "storage_request_hard", _DEFAULT_CRQ_STORAGE_HARD_BYTES
     )

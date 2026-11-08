@@ -157,6 +157,30 @@ class ClusterQuotaStaticYamlTest(unittest.TestCase):
         self.assertEqual(int(platform["pods_used"]), 410)
         self.assertEqual(platform["namespaces"], "crq-e2e-ns,openshift-monitoring")
 
+    def test_memory_gig_alias_wins_for_hard_and_used(self):
+        """`_gig` beats its byte-named counterpart on both hard and used memory."""
+        rows = _generate_crq_rows(
+            [
+                {
+                    "name": "mem-alias-crq",
+                    "memory_request_hard_gig": 50,
+                    "memory_request_hard": 1,
+                    "memory_request_used_gig": 45,
+                    "memory_request_used": 1,
+                    "memory_limit_hard_gig": 100,
+                    "memory_limit_hard": 1,
+                    "memory_limit_used_gig": 90,
+                    "memory_limit_used": 1,
+                }
+            ]
+        )
+        cells = _rows_as_csv(rows)[0]
+
+        self.assertEqual(float(cells["memory_request_hard"]), 50 * GIGABYTE)
+        self.assertEqual(float(cells["memory_request_used"]), 45 * GIGABYTE)
+        self.assertEqual(float(cells["memory_limit_hard"]), 100 * GIGABYTE)
+        self.assertEqual(float(cells["memory_limit_used"]), 90 * GIGABYTE)
+
     def test_report_type_column_contract_is_unchanged(self):
         """Guard: the CSV header the ROS parser matches on must not drift."""
         self.assertIn("storage_request_hard", OCP_ROS_CLUSTER_QUOTA_COLUMN)
