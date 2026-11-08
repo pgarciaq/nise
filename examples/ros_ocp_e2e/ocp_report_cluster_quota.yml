@@ -2,6 +2,12 @@
 # OCP static report for ClusterResourceQuota recommendation E2E.
 # High CRQ used/hard ratios exercise the cluster-quota plugin tighten/raise paths.
 #
+# Units: `*_gig` keys are GiB (multiplied by 1024^3); the byte-named keys
+# (e.g. storage_request_hard) are exact bytes. When both spellings appear the
+# `_gig` key wins, matching memory_request_hard_gig. object_count_hard: 0
+# declares "no object quota" and is kept as 0, so no object recommendation is
+# produced instead of a synthetic default being invented.
+#
 # Use with generate_nise_data(..., iqe_template="ocp_report_cluster_quota.yml", include_ros=True)
 generators:
   - OCPGenerator:

@@ -888,6 +888,14 @@ def cluster_quota_used_ratio(quota_config, hard_key, used_key, constant_values_r
     return uniform(0.3, 0.85)
 
 
+def _quota_bytes(quota_config, gig_key, byte_key, default):
+    """Return a byte value from a `_gig` or byte key (`_gig` wins when both are set)."""
+    gig_value = quota_config.get(gig_key)
+    if gig_value is not None:
+        return float(gig_value) * GIGABYTE
+    return float(quota_config.get(byte_key, default))
+
+
 def cluster_quota_hard_and_used_values(quota_config, constant_values_ros_ocp=False):
     """Return ClusterResourceQuota hard and used values (CPU cores, memory bytes)."""
     cpu_request_hard = float(quota_config.get("cpu_request_hard", randint(10, 50)))
@@ -947,8 +955,15 @@ def cluster_quota_hard_and_used_values(quota_config, constant_values_ros_ocp=Fal
     memory_request_used = min(memory_request_used, memory_request_hard)
     memory_limit_used = min(memory_limit_used, memory_limit_hard)
 
-    storage_request_hard = float(quota_config.get("storage_request_hard", _DEFAULT_CRQ_STORAGE_HARD_BYTES))
-    storage_request_used = float(quota_config.get("storage_request_used", _DEFAULT_CRQ_STORAGE_USED_BYTES))
+    # Storage follows the memory convention: the `_gig` spelling wins when both
+    # are present, so a human-authored fixture can stay in GiB while computed
+    # values keep their exact byte form.
+    storage_request_hard = _quota_bytes(
+        quota_config, "storage_request_hard_gig", "storage_request_hard", _DEFAULT_CRQ_STORAGE_HARD_BYTES
+    )
+    storage_request_used = _quota_bytes(
+        quota_config, "storage_request_used_gig", "storage_request_used", _DEFAULT_CRQ_STORAGE_USED_BYTES
+    )
     pods_hard = int(quota_config.get("pods_hard", _DEFAULT_CRQ_PODS_HARD))
     pods_used = int(quota_config.get("pods_used", _DEFAULT_CRQ_PODS_USED))
     object_count_hard = int(quota_config.get("object_count_hard", _DEFAULT_CRQ_OBJECT_COUNT_HARD))
@@ -1406,6 +1421,34 @@ class OCPGenerator(AbstractGenerator):
             "memory_limit_hard_gig": memory_request_hard_gig * 2,
         }
 
+    # Keys `cluster_quota_hard_and_used_values` understands. Copying by key
+    # presence (not truthiness) keeps explicit zeros such as a disabled
+    # object-count quota, and dropping a key here silently replaces the
+    # supplied value with a synthetic default (issue #774).
+    _STATIC_CLUSTER_QUOTA_KEYS = (
+        "cpu_request_hard",
+        "cpu_limit_hard",
+        "cpu_request_used",
+        "cpu_limit_used",
+        "memory_request_hard",
+        "memory_limit_hard",
+        "memory_request_used",
+        "memory_limit_used",
+        "memory_request_hard_gig",
+        "memory_limit_hard_gig",
+        "memory_request_used_gig",
+        "memory_limit_used_gig",
+        "storage_request_hard",
+        "storage_request_used",
+        "storage_request_hard_gig",
+        "storage_request_used_gig",
+        "pods_hard",
+        "pods_used",
+        "object_count_hard",
+        "object_count_used",
+        "namespaces",
+    )
+
     def _cluster_resource_quotas_from_static(self, static_quotas):
         """Normalize cluster_resource_quotas entries from static report YAML."""
         quotas = []
@@ -1414,20 +1457,7 @@ class OCPGenerator(AbstractGenerator):
             if not name:
                 continue
             quota = {"name": name}
-            for key in (
-                "cpu_request_hard",
-                "cpu_limit_hard",
-                "cpu_request_used",
-                "cpu_limit_used",
-                "memory_request_hard",
-                "memory_limit_hard",
-                "memory_request_used",
-                "memory_limit_used",
-                "memory_request_hard_gig",
-                "memory_limit_hard_gig",
-                "memory_request_used_gig",
-                "memory_limit_used_gig",
-            ):
+            for key in self._STATIC_CLUSTER_QUOTA_KEYS:
                 if key in entry:
                     quota[key] = entry[key]
             quotas.append(quota)
