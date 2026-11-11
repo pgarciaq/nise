@@ -1865,7 +1865,14 @@ class OCPGenerator(AbstractGenerator):
             return "", {}
         for volume in self.volumes:
             for vol_name, vol in volume.items():
-                if specific_pvc := vol["volume_claims"].get(pvc):
+                # #830 (V16-06): the claim NAME is not unique across
+                # namespaces — two namespaces may each carry a claim named
+                # "data". A name match in another namespace is skipped, not
+                # returned: the scan continues until the requested
+                # namespace's own claim is found, so capacity attribution
+                # (and the VM disk capacity derived from it) never flips
+                # with volume declaration order.
+                if (specific_pvc := vol["volume_claims"].get(pvc)) and specific_pvc["namespace"] == namespace:
                     return pvc, specific_pvc
         return "", {}
 

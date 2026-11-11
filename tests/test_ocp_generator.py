@@ -3126,6 +3126,110 @@ class OCPGeneratorTestCase(TestCase):
         self.assertEqual(rows[0]["snapshot_name"], "db-daily-backup")
         self.assertEqual(rows[1]["snapshot_name"], "orphan-snap")
 
+    def test_same_named_pvcs_keep_own_namespace_claim(self):
+        """Same-named PVCs in two namespaces must keep their own claims (#830).
+
+        The #775 fix qualified the pod-to-claim-name mapping, but the volume
+        scan matched the claim by NAME only: with a claim "data" in each
+        namespace, the first namespace's claim won for BOTH lookups, and the
+        VM disk capacity derived from it — order-flippable corruption (V16-06).
+        The #775 test uses distinct claim names and cannot see this collision.
+        """
+        for order in (("ns-a", "ns-b"), ("ns-b", "ns-a")):
+            namespaces = {}
+            for ns in order:
+                capacity = 1 if ns == "ns-a" else 5
+                namespaces[ns] = {
+                    "pods": [
+                        {
+                            "pod_name": "web",
+                            "cpu_request": 1,
+                            "cpu_limit": 2,
+                            "mem_request_gig": 1,
+                            "mem_limit_gig": 2,
+                        }
+                    ],
+                    "volumes": [
+                        {
+                            "volume_name": f"pv-{ns}",
+                            "volume_request_gig": 10,
+                            "volume_claims": [
+                                {
+                                    "volume_claim_name": "data",
+                                    "pod_name": "web",
+                                    "capacity_gig": capacity,
+                                }
+                            ],
+                        }
+                    ],
+                    # A static VM bound to the pod, so the regression also
+                    # covers the REAL static-VM call site
+                    # (_gen_virtual_machines → get_vm_disk(specified_vc=…,
+                    # namespace=…)) — not just the direct helper. Distinct
+                    # VM names per namespace: same-named VMs are #821's.
+                    "virtual_machines": [
+                        {
+                            "vm_name": f"vm-{ns}",
+                            "pod_name": "web",
+                            "cpu_request": 1,
+                            "cpu_limit": 2,
+                        }
+                    ],
+                }
+            start = datetime(2026, 11, 1)
+            generator = OCPGenerator(
+                start,
+                start + timedelta(hours=1),
+                {
+                    "nodes": [
+                        {
+                            "node_name": "n1",
+                            "cpu_cores": 16,
+                            "memory_gig": 64,
+                            "namespaces": namespaces,
+                        }
+                    ]
+                },
+                ros_ocp_info=True,
+                constant_values_ros_ocp=True,
+            )
+
+            for ns, capacity in (("ns-a", 1), ("ns-b", 5)):
+                pvc, claim = generator.get_specific_pvc_from_pod(namespace=ns, pod_name="web")
+                self.assertEqual(
+                    pvc,
+                    "data",
+                    f"order={order}: the pod's claim name must resolve",
+                )
+                self.assertEqual(
+                    claim["namespace"],
+                    ns,
+                    f"order={order}: namespace {ns} must get its OWN claim, not the first same-named one (#830)",
+                )
+                self.assertEqual(
+                    claim["capacity"],
+                    capacity * GIGABYTE,
+                    f"order={order}: namespace {ns} capacity attribution must not flip with declaration order (#830)",
+                )
+                disk = generator.get_vm_disk(namespace=ns, pod_name="web", static_report=True)
+                self.assertEqual(disk["vm_persistentvolumeclaim_name"], "data")
+                self.assertEqual(
+                    disk["vc_capacity"],
+                    capacity * GIGABYTE,
+                    f"order={order}: the VM disk consumer must carry namespace {ns}'s capacity (#830)",
+                )
+                # The static-VM call site: the generated VM row must carry
+                # its own namespace's claim and capacity (#830 review F2 —
+                # the direct-helper assertions alone would not catch a
+                # call site that drops the namespace).
+                vm_row = generator.vms[f"vm-{ns}"]
+                self.assertEqual(vm_row["vm_persistentvolumeclaim_name"], "data")
+                self.assertEqual(
+                    vm_row["vc_capacity"],
+                    capacity * GIGABYTE,
+                    f"order={order}: the generated VM must carry namespace {ns}'s capacity (#830 review F2)",
+                )
+
 
 class GenRosGpuMetricsTest(TestCase):
     """Tests for the _gen_ros_gpu_metrics function with overrides."""
