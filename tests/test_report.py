@@ -20,6 +20,8 @@ import csv
 import datetime
 import json
 import os
+
+import requests
 import re
 import shutil
 from tempfile import mkdtemp
@@ -68,7 +70,7 @@ from nise.report import gcp_create_report
 from nise.report import gcp_route_file
 from nise.report import ocp_create_report
 from nise.report import ocp_route_file
-from nise.report import post_payload_to_ingest_service
+from nise.report import post_payload_to_ingest_service, upload_file_to_s3
 from nise.report import write_gcp_file
 
 fake = faker.Faker()
@@ -373,7 +375,7 @@ class MiscReportTestCase(TestCase):
         self.assertEqual(generators[0].get("attributes").get("end_date").day, 22)
         self.assertEqual(generators[0].get("attributes").get("end_date").year, 2019)
 
-    @patch.dict(os.environ, {"INSIGHTS_ACCOUNT_ID": "12345", "INSIGHTS_ORG_ID": "54321"})
+    @patch.dict(os.environ, {"INSIGHTS_ACCOUNT_ID": "12345", "INSIGHTS_ORG_ID": "54321"}, clear=True)
     @patch("nise.report.requests.post")
     def test_post_payload_to_ingest_service_with_identity_header(self, mock_post):
         """Test that the identity header path is taken."""
@@ -400,11 +402,11 @@ class MiscReportTestCase(TestCase):
         post_payload_to_ingest_service(insights_upload, temp_file.name)
         self.assertEqual(mock_post.call_args[1].get("headers"), headers)
         self.assertNotIn("auth", mock_post.call_args[1])
-        # #755: uploads verify TLS by default — no verify kwarg means
-        # requests' default (True). This branch was always correct.
-        self.assertNotIn("verify", mock_post.call_args[1])
+        # #755/#832: uploads verify TLS by default — now EXPLICIT at the
+        # transport boundary (the override helper's default is True).
+        self.assertIs(mock_post.call_args[1].get("verify"), True)
 
-    @patch.dict(os.environ, {"INSIGHTS_USER": "12345", "INSIGHTS_PASSWORD": "54321"})
+    @patch.dict(os.environ, {"INSIGHTS_USER": "12345", "INSIGHTS_PASSWORD": "54321"}, clear=True)
     @patch("nise.report.requests.post")
     def test_post_payload_to_ingest_service_with_basic_auth(self, mock_post):
         """Test that the basic auth path is taken."""
@@ -423,15 +425,15 @@ class MiscReportTestCase(TestCase):
         post_payload_to_ingest_service(insights_upload, temp_file.name)
         self.assertEqual(mock_post.call_args[1].get("auth"), auth)
         self.assertNotIn("headers", mock_post.call_args[1])
-        # #755: uploads verify TLS by default — the credential-carrying
-        # branch must not disable verification (pre-fix: verify=False).
-        self.assertNotIn(
-            "verify",
-            mock_post.call_args[1],
-            "basic-auth upload must not disable TLS verification (#755)",
+        # #755/#832: uploads verify TLS by default — the credential-carrying
+        # branch must not disable verification (pre-#755: verify=False).
+        self.assertIs(
+            mock_post.call_args[1].get("verify"),
+            True,
+            "basic-auth upload must verify TLS by default (#755)",
         )
 
-    @patch.dict(os.environ, {"HCC_SERVICE_ACCOUNT_ID": "12345", "HCC_SERVICE_ACCOUNT_SECRET": "54321"})
+    @patch.dict(os.environ, {"HCC_SERVICE_ACCOUNT_ID": "12345", "HCC_SERVICE_ACCOUNT_SECRET": "54321"}, clear=True)
     @patch("nise.report.requests.post")
     def test_post_payload_to_ingest_service_with_service_account(self, mock_post):
         """Test that the service account path is taken."""
@@ -445,16 +447,25 @@ class MiscReportTestCase(TestCase):
 
         post_payload_to_ingest_service(insights_upload, temp_file.name)
         self.assertEqual(mock_post.call_args[1].get("data"), data)
-        # #755: BOTH the token acquisition and the upload verify TLS — the
-        # filed asymmetry (token verified, upload carrying it not) is closed.
+        # #755/#832: BOTH the token acquisition and the upload verify TLS —
+        # the filed asymmetry (token verified, upload carrying it not) is
+        # closed, now explicit at both boundaries.
+        # #832 review: with the environment isolated, this test genuinely
+        # runs the bearer flow — pin it (ambient credentials previously
+        # let it pass while executing the basic-auth path).
+        self.assertEqual(
+            len(mock_post.call_args_list),
+            2,
+            "the bearer flow makes exactly two calls: token acquisition + upload",
+        )
         for i, call in enumerate(mock_post.call_args_list):
-            self.assertNotIn(
-                "verify",
-                call[1],
-                f"bearer-flow call #{i} (token/upload) must not disable TLS verification (#755)",
+            self.assertIs(
+                call[1].get("verify"),
+                True,
+                f"bearer-flow call #{i} (token/upload) must verify TLS by default (#755)",
             )
 
-    @patch.dict(os.environ, {"HCC_SERVICE_ACCOUNT_ID": "12345", "HCC_SERVICE_ACCOUNT_SECRET": "54321"})
+    @patch.dict(os.environ, {"HCC_SERVICE_ACCOUNT_ID": "12345", "HCC_SERVICE_ACCOUNT_SECRET": "54321"}, clear=True)
     @patch("nise.report.requests.post")
     def test_post_payload_to_ingest_service_oauth_token_failure(self, mock_post):
         """Test that RequestException is raised when OAuth token request fails."""
@@ -472,11 +483,14 @@ class MiscReportTestCase(TestCase):
 
         os.remove(temp_file.name)
 
-    @patch.dict(os.environ, {"INSIGHTS_USER": "12345", "INSIGHTS_PASSWORD": "54321", "REQUESTS_VERIFY": "false"})
+    @patch.dict(
+        os.environ, {"INSIGHTS_USER": "12345", "INSIGHTS_PASSWORD": "54321", "REQUESTS_VERIFY": "false"}, clear=True
+    )
     @patch("nise.report.requests.post")
     def test_post_payload_warns_when_insecure(self, mock_post):
-        """#755: REQUESTS_VERIFY=false still functions (requests-native)
-        but nise visibly warns — the explicit, warned opt-in."""
+        """#755/#832: REQUESTS_VERIFY=false disables verification at the
+        transport (nise implements the knob — requests has no such env
+        var) and nise visibly warns: the explicit, warned opt-in."""
         temp_file = NamedTemporaryFile(mode="w", delete=False)
         headers = ["col1", "col2"]
         data = [{"col1": "r1c1", "col2": "r1c2"}, {"col1": "r2c1", "col2": "r2c2"}]
@@ -488,11 +502,11 @@ class MiscReportTestCase(TestCase):
             any("verification is DISABLED" in msg for msg in logged.output),
             f"the insecure-mode warning must fire (got: {logged.output})",
         )
-        # The upload still proceeds via the requests-native env knob.
+        # The upload proceeds with the override reaching the transport.
         self.assertEqual(mock_post.call_count, 1)
         os.remove(temp_file.name)
 
-    @patch.dict(os.environ, {"INSIGHTS_USER": "12345", "INSIGHTS_PASSWORD": "54321"})
+    @patch.dict(os.environ, {"INSIGHTS_USER": "12345", "INSIGHTS_PASSWORD": "54321"}, clear=True)
     @patch("nise.report.requests.post")
     def test_post_payload_no_warning_when_verify_default(self, mock_post):
         """#755: no insecure warning when REQUESTS_VERIFY is unset."""
@@ -501,19 +515,15 @@ class MiscReportTestCase(TestCase):
         data = [{"col1": "r1c1", "col2": "r1c2"}, {"col1": "r2c1", "col2": "r2c2"}]
         _write_csv(temp_file.name, data, headers)
 
-        try:
-            with self.assertLogs("nise.util.log", level="WARNING") as logged:
-                post_payload_to_ingest_service({}, temp_file.name)
-            self.assertFalse(
-                any("verification is DISABLED" in msg for msg in logged.output),
-                "no insecure warning when verification is on",
-            )
-        except AssertionError:
-            # assertLogs raises when NOTHING is logged — acceptable here.
-            pass
+        # #832 review: assert via a warning mock — an assertLogs-based
+        # shape swallowed its own failed assertion (an injected insecure
+        # warning still passed).
+        with patch("nise.report.LOG.warning") as warning:
+            post_payload_to_ingest_service({}, temp_file.name)
+        warning.assert_not_called()
         os.remove(temp_file.name)
 
-    @patch.dict(os.environ, {"INSIGHTS_USER": "12345", "INSIGHTS_PASSWORD": "54321"})
+    @patch.dict(os.environ, {"INSIGHTS_USER": "12345", "INSIGHTS_PASSWORD": "54321"}, clear=True)
     @patch("nise.report.time.sleep")
     @patch("nise.report.requests.post")
     def test_post_payload_to_ingest_service_connection_error_retry_success(self, mock_post, mock_sleep):
@@ -544,7 +554,7 @@ class MiscReportTestCase(TestCase):
 
         os.remove(temp_file.name)
 
-    @patch.dict(os.environ, {"INSIGHTS_USER": "12345", "INSIGHTS_PASSWORD": "54321"})
+    @patch.dict(os.environ, {"INSIGHTS_USER": "12345", "INSIGHTS_PASSWORD": "54321"}, clear=True)
     @patch("nise.report.time.sleep")
     @patch("nise.report.requests.post")
     def test_post_payload_to_ingest_service_connection_error_exhausted_retries(self, mock_post, mock_sleep):
@@ -566,7 +576,7 @@ class MiscReportTestCase(TestCase):
 
         os.remove(temp_file.name)
 
-    @patch.dict(os.environ, {"INSIGHTS_USER": "12345", "INSIGHTS_PASSWORD": "54321"})
+    @patch.dict(os.environ, {"INSIGHTS_USER": "12345", "INSIGHTS_PASSWORD": "54321"}, clear=True)
     @patch("nise.report.requests.post")
     def test_post_payload_to_ingest_service_non_retryable_request_exception(self, mock_post):
         """Test that non-ConnectionError RequestException is not retried."""
@@ -586,7 +596,7 @@ class MiscReportTestCase(TestCase):
 
         os.remove(temp_file.name)
 
-    @patch.dict(os.environ, {"INSIGHTS_USER": "12345", "INSIGHTS_PASSWORD": "54321"})
+    @patch.dict(os.environ, {"INSIGHTS_USER": "12345", "INSIGHTS_PASSWORD": "54321"}, clear=True)
     @patch("nise.report.requests.post")
     def test_post_payload_to_ingest_service_unknown_filesize(self, mock_post):
         """Test that filesize is 'unknown' when local_path is not a valid file."""
@@ -1440,7 +1450,7 @@ class OCPReportTestCase(TestCase):
 
         shutil.rmtree(local_insights_upload)
 
-    @patch.dict(os.environ, {"INSIGHTS_USER": "12345", "INSIGHTS_PASSWORD": "54321"})
+    @patch.dict(os.environ, {"INSIGHTS_USER": "12345", "INSIGHTS_PASSWORD": "54321"}, clear=True)
     @patch("nise.report.requests.post")
     def test_ocp_route_file(self, mock_post):
         """Test that a response is good."""
@@ -2107,3 +2117,109 @@ class GCPReportTestCase(TestCase):
         expected_output_file_path = f"{os.getcwd()}/{output_file_name}"
 
         self.assertFalse(os.path.isfile(expected_output_file_path))
+
+
+class TlsVerifyOverrideTestCase(TestCase):
+    """#832 (V16-07): the REQUESTS_VERIFY override, the warning, and the
+    EFFECTIVE transport setting must agree — asserted at the Requests
+    adapter boundary (HTTPAdapter.send), not by inspecting an omitted
+    kwarg or a warning string. Baseline defect: the warning claimed
+    verification was DISABLED while the adapter received verify=True
+    (requests implements no REQUESTS_VERIFY env var).
+    """
+
+    def _upload(self, env):
+        seen = []
+
+        def transport(request, **kwargs):
+            seen.append(kwargs.get("verify"))
+            response = requests.Response()
+            response.status_code = 200
+            response._content = b'{"access_token": "dummy-token"}'
+            return response
+
+        with NamedTemporaryFile(delete=False) as payload:
+            payload.write(b"dummy local payload")
+        try:
+            with patch.dict(os.environ, env, clear=True):
+                with (
+                    patch("requests.adapters.HTTPAdapter.send", side_effect=transport),
+                    patch("nise.report.LOG.warning") as warning,
+                ):
+                    post_payload_to_ingest_service("https://example.invalid/upload", payload.name, max_retries=0)
+        finally:
+            os.unlink(payload.name)
+        return seen, warning
+
+    def test_override_disables_verification_basic_auth(self):
+        """The override must reach the transport: verify=False at the boundary."""
+        seen, warning = self._upload(
+            {"REQUESTS_VERIFY": "false", "INSIGHTS_USER": "dummy", "INSIGHTS_PASSWORD": "dummy"}
+        )
+        self.assertEqual(
+            seen,
+            [False],
+            "REQUESTS_VERIFY=false must reach the transport as verify=False — the warning must not lie (#832)",
+        )
+        self.assertTrue(warning.called, "the insecure-mode warning must fire when the override is active")
+
+    def test_override_disables_verification_identity_header(self):
+        seen, warning = self._upload(
+            {"REQUESTS_VERIFY": "false", "INSIGHTS_ACCOUNT_ID": "12345", "INSIGHTS_ORG_ID": "54321"}
+        )
+        self.assertEqual(seen, [False], "the identity-header upload must carry the override (#832)")
+        self.assertTrue(warning.called)
+
+    def test_override_disables_verification_bearer_flow(self):
+        """Both egress points of the bearer flow — the token acquisition
+        and the upload — must carry the override (a partial override fails
+        the token endpoint's TLS first in exactly the lab scenario the
+        knob exists for)."""
+        seen, warning = self._upload(
+            {"REQUESTS_VERIFY": "false", "HCC_SERVICE_ACCOUNT_ID": "id", "HCC_SERVICE_ACCOUNT_SECRET": "sec"}
+        )
+        self.assertEqual(
+            seen,
+            [False, False],
+            "the token acquisition and the upload must BOTH carry verify=False (#832)",
+        )
+        self.assertTrue(warning.called)
+
+    def test_default_verifies_and_stays_silent(self):
+        seen, warning = self._upload({"INSIGHTS_USER": "dummy", "INSIGHTS_PASSWORD": "dummy"})
+        self.assertEqual(seen, [True], "no override: the transport must verify (requests default, #755)")
+        self.assertFalse(warning.called, "no override: no insecure-mode warning")
+
+    def test_explicit_true_verifies_and_stays_silent(self):
+        seen, warning = self._upload(
+            {"REQUESTS_VERIFY": "true", "INSIGHTS_USER": "dummy", "INSIGHTS_PASSWORD": "dummy"}
+        )
+        self.assertEqual(seen, [True], "REQUESTS_VERIFY=true: the transport must verify (#832)")
+        self.assertFalse(warning.called)
+
+    def test_override_reaches_minio_put(self):
+        """#832 (owner-approved extension): the MinIO/S3 presigned-URL PUT
+        carries the same lab transport knob — a self-signed MinIO endpoint
+        is the same isolated-lab scenario. Asserted at the adapter boundary.
+        """
+
+        def transport(request, **kwargs):
+            response = requests.Response()
+            response.status_code = 200
+            return response
+
+        with NamedTemporaryFile(delete=False) as payload:
+            payload.write(b"dummy local payload")
+        try:
+            for env, expected in (
+                ({"REQUESTS_VERIFY": "false"}, False),
+                ({}, True),
+            ):
+                with (
+                    patch.dict(os.environ, env, clear=True),
+                    patch("requests.adapters.HTTPAdapter.send", side_effect=transport) as send,
+                ):
+                    upload_file_to_s3("https://minio.example.invalid/presigned", payload.name)
+                self.assertIs(send.call_args[1].get("verify"), expected)
+        finally:
+            os.unlink(payload.name)

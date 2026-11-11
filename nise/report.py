@@ -268,8 +268,12 @@ def get_s3_signature(url, file_name):  # pragma: no cover
 
 
 def upload_file_to_s3(signature, file_path):  # pragma: no cover
+    # #832: the MinIO/S3 presigned-URL PUT shares the lab transport knob
+    # with the ingress upload flow — a self-signed MinIO endpoint is the
+    # same isolated-lab scenario the knob exists for. Default: verified
+    # (real S3 presigned URLs carry valid certs and are unaffected).
     with open(file_path, "rb") as f:
-        response = requests.put(signature, data=f)
+        response = requests.put(signature, data=f, verify=_requests_verify())
     return response
 
 
@@ -290,18 +294,38 @@ def _convert_bytes(num):
     return None
 
 
+def _requests_verify():
+    """The effective TLS verification setting for nise's egress calls (#832).
+
+    REQUESTS_VERIFY=false/0/no opts out (isolated labs with self-signed
+    ingress or MinIO); anything else — including unset — verifies. Read
+    ONCE per upload flow and shared by the insecure-mode warning, the
+    token acquisition, all three upload auth paths, and the MinIO/S3
+    presigned-URL PUT — so the diagnostic and the transport always agree.
+    """
+    return os.environ.get("REQUESTS_VERIFY", "true").strip().lower() not in ("false", "0", "no")
+
+
 def post_payload_to_ingest_service(insights_upload, local_path, max_retries=3, initial_backoff=2):  # noqa: C901
     """POST the payload to Insights via header or basic auth with retry logic"""
-    # #755: TLS verification is on by default (requests' native behavior —
-    # the same policy as koku's own transport layer). Private-CA labs set
-    # REQUESTS_CA_BUNDLE; insecure lab use sets REQUESTS_VERIFY=false, which
-    # requests honors natively — we only make that mode visible.
-    if os.environ.get("REQUESTS_VERIFY", "true").lower() in ("false", "0", "no"):
+    # #832 (correcting #755's comment): requests does NOT implement a
+    # REQUESTS_VERIFY environment variable — its native env support is the
+    # CA-bundle path (REQUESTS_CA_BUNDLE / CURL_CA_BUNDLE, which private-CA
+    # labs use and which works unchanged). nise implements the insecure-lab
+    # opt-in itself: ONE helper feeds BOTH the warning and every egress
+    # call below (token acquisition + all three upload auth paths), so the
+    # diagnostic and the effective transport setting cannot disagree.
+    # Default: verified — the same policy as koku's own transport layer.
+    # #832 review: the setting is snapshotted ONCE per upload — a mid-flight
+    # environment change must not split the warning from the transport or
+    # the token request from the upload.
+    verify_tls = _requests_verify()
+    if not verify_tls:
         LOG.warning(
             "TLS certificate verification is DISABLED for uploads "
             "(REQUESTS_VERIFY=%s). This exposes credentials to network "
             "interception — use only in isolated labs.",
-            os.environ["REQUESTS_VERIFY"],
+            os.environ.get("REQUESTS_VERIFY", ""),
         )
     insights_account_id = os.environ.get("INSIGHTS_ACCOUNT_ID")
     insights_org_id = os.environ.get("INSIGHTS_ORG_ID")
@@ -353,7 +377,7 @@ def post_payload_to_ingest_service(insights_upload, local_path, max_retries=3, i
             token_data += f"&scope={hcc_token_scope}"
 
         try:
-            token_resp = requests.post(hcc_token_url, data=token_data, headers=token_headers)
+            token_resp = requests.post(hcc_token_url, data=token_data, headers=token_headers, verify=_requests_verify())
             token_resp.raise_for_status()
             token_json = token_resp.json()
             token = token_json.get("access_token")
@@ -377,24 +401,28 @@ def post_payload_to_ingest_service(insights_upload, local_path, max_retries=3, i
                         data={},
                         files={"file": ("payload.tar.gz", upload_file, content_type)},
                         headers=headers,
+                        verify=verify_tls,
                     )
                 elif auth_method == "basic_auth":
-                    # #755: TLS verified by default (requests); private-CA
-                    # labs set REQUESTS_CA_BUNDLE.
+                    # #755/#832: verified by default; the explicit lab
+                    # override reaches the transport — private-CA labs keep
+                    # using REQUESTS_CA_BUNDLE (requests-native).
                     response = requests.post(
                         insights_upload,
                         data={},
                         files={"file": ("payload.tar.gz", upload_file, content_type)},
                         auth=auth,
+                        verify=verify_tls,
                     )
                 else:  # bearer_token
-                    # #755: same — the upload carrying the acquired token
-                    # verifies, matching the token acquisition itself.
+                    # #755/#832: the upload carrying the acquired token
+                    # matches the token acquisition's verification setting.
                     response = requests.post(
                         insights_upload,
                         data={},
                         files={"file": ("payload.tar.gz", upload_file, content_type)},
                         headers=headers,
+                        verify=verify_tls,
                     )
 
                 # If we get here, the request succeeded
