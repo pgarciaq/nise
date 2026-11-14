@@ -1799,7 +1799,11 @@ class OCPGenerator(AbstractGenerator):
             if total_claims > volume_request:
                 raise ValueError(f"Total claims {total_claims} is greater than volume request {volume_request}")
             if pod:
-                self.pod_pvc_map[pod_key(namespace, pod)] = vol_claim
+                # #837: one pod may mount several claims (rootdisk + data), so the
+                # map keeps every claim bound to it in declaration order. A single
+                # assignment lost all but the last, which made a VM's PVC identity
+                # and capacity depend on volume declaration order.
+                self.pod_pvc_map.setdefault(pod_key(namespace, pod), []).append(vol_claim)
         return volume, {
             "node": node.get("name"),
             "namespace": namespace,
@@ -1815,10 +1819,27 @@ class OCPGenerator(AbstractGenerator):
     def _gen_volumes(self, namespaces, namespace2pods):  # noqa: C901
         """Create volumes on specific namespaces and keep relationship."""
         volumes = []
+        # #837: a PVC name is unique within its namespace, so the same declared
+        # claim name on two volumes (same node or across the namespace's nodes)
+        # cannot be represented in a cluster. Tracked per generator, because the
+        # static branch below is entered once per (namespace, node) pair.
+        declared_claims = {}
         for namespace, node in namespaces:
             if node.get("namespaces"):
                 specified_volumes = node.get("namespaces").get(namespace).get("volumes", [])
                 for specified_volume in specified_volumes:
+                    for specified_vc in specified_volume.get("volume_claims") or []:
+                        claim_name = (specified_vc or {}).get("volume_claim_name")
+                        if not claim_name:
+                            continue
+                        key = pod_key(namespace, claim_name)
+                        if key in declared_claims:
+                            raise ValueError(
+                                f"duplicate claim identity {key!r}: claim {claim_name!r} in namespace "
+                                f"{namespace!r} is declared on volumes "
+                                f"{declared_claims[key]!r} and {specified_volume.get('volume_name')!r}"
+                            )
+                        declared_claims[key] = specified_volume.get("volume_name")
                     volume_name, volume = self._gen_specific_volume(node, namespace, specified_volume)
                     volumes.append({volume_name: volume})
             else:
@@ -1845,7 +1866,7 @@ class OCPGenerator(AbstractGenerator):
                             "pod": pod,
                         }
                         total_claims += claim_capacity
-                        self.pod_pvc_map[pod_key(namespace, pod)] = vol_claim
+                        self.pod_pvc_map.setdefault(pod_key(namespace, pod), []).append(vol_claim)
                     storage_class_default, csi_default = get_storage_class_and_driver()
                     volumes.append(
                         {
@@ -1864,10 +1885,41 @@ class OCPGenerator(AbstractGenerator):
                     )
         return volumes
 
-    def get_specific_pvc_from_pod(self, *, namespace, pod_name):
-        """Return (claim_name, claim) for a pod, resolved within its namespace."""
-        if not (pvc := self.pod_pvc_map.get(pod_key(namespace, pod_name))):
+    def get_specific_pvc_from_pod(self, *, namespace, pod_name, claim_name="", strict=True):
+        """Return (claim_name, claim) for a pod, resolved within its namespace.
+
+        ``claim_name`` lets a declared VM name the claim it mounts; ``strict``
+        makes an ambiguous pod (several claims, none named) fail loudly instead
+        of picking one. Random-mode VMs pass ``strict=False``: their names are
+        draws, so a loud failure there would abort legitimate runs (#775's rule).
+        """
+        claims = self.pod_pvc_map.get(pod_key(namespace, pod_name)) or []
+        if not claims:
             return "", {}
+        if claim_name:
+            if claim_name not in claims:
+                # #837: a declared claim the pod does not mount is a typo. Static
+                # reports must say so, because the alternative is a VM emitted with
+                # no disk at all — the silent wrong answer this issue is about.
+                if strict:
+                    raise ValueError(
+                        f"declared claim {claim_name!r} is not bound to pod "
+                        f"{pod_key(namespace, pod_name)!r}; bound claims: {', '.join(sorted(claims))}"
+                    )
+                return "", {}
+            resolved = claim_name
+        elif len(claims) == 1:
+            resolved = claims[0]
+        elif strict:
+            # #837: two claims bound to one pod with nothing to choose between
+            # them is a declaration gap, not something to guess at.
+            raise ValueError(
+                f"ambiguous claim for pod {pod_key(namespace, pod_name)!r}: "
+                f"{len(claims)} claims are bound to it ({', '.join(sorted(claims))}); "
+                "declare volume_claim_name on the VM to select one"
+            )
+        else:
+            resolved = claims[0]
         for volume in self.volumes:
             for vol_name, vol in volume.items():
                 # #830 (V16-06): the claim NAME is not unique across
@@ -1877,8 +1929,8 @@ class OCPGenerator(AbstractGenerator):
                 # namespace's own claim is found, so capacity attribution
                 # (and the VM disk capacity derived from it) never flips
                 # with volume declaration order.
-                if (specific_pvc := vol["volume_claims"].get(pvc)) and specific_pvc["namespace"] == namespace:
-                    return pvc, specific_pvc
+                if (specific_pvc := vol["volume_claims"].get(resolved)) and specific_pvc["namespace"] == namespace:
+                    return resolved, specific_pvc
         return "", {}
 
     def get_vm_disk(self, *, specified_vc=None, pod_name="", namespace="", static_report=False):
@@ -1888,7 +1940,12 @@ class OCPGenerator(AbstractGenerator):
             "vm_volume_mode": specified_vc.get("volume_mode") or "Block",
         }
         if _pod_name := specified_vc.get("pod_name") or pod_name:
-            pvc_name, pvc = self.get_specific_pvc_from_pod(namespace=namespace, pod_name=_pod_name)
+            pvc_name, pvc = self.get_specific_pvc_from_pod(
+                namespace=namespace,
+                pod_name=_pod_name,
+                claim_name=specified_vc.get("volume_claim_name", ""),
+                strict=static_report,
+            )
             if pvc_name and pvc:
                 vm_disk |= {
                     "vm_persistentvolumeclaim_name": pvc_name,
@@ -2037,14 +2094,15 @@ class OCPGenerator(AbstractGenerator):
                     self.ros_data[key] = ros_pod
                     self.namespace2pods[namespace].append(pod_name)
                 vcm = vm_copy.get("vm_persistentvolumeclaim_name")
-                # #838: pod_pvc_map values are claim NAMES, unique only within a
-                # namespace, so membership must be asked per namespace — a
-                # same-named claim in another namespace must not suppress this
+                # #838: pod_pvc_map values are claim NAMES (a list per pod since
+                # #837, because one pod may mount several claims), unique only
+                # within a namespace, so membership must be asked per namespace —
+                # a same-named claim in another namespace must not suppress this
                 # VM's volume synthesis. Keys are pod_key(namespace, pod) and
                 # Kubernetes DNS labels cannot contain "/", so the prefix split
                 # is unambiguous (#775).
                 if vcm and not any(
-                    key.split("/", 1)[0] == namespace and mapped == vcm for key, mapped in self.pod_pvc_map.items()
+                    key.split("/", 1)[0] == namespace and vcm in mapped for key, mapped in self.pod_pvc_map.items()
                 ):
                     specified_volume = {
                         "volume_claims": [

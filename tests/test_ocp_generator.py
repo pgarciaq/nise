@@ -1319,7 +1319,9 @@ class OCPGeneratorTestCase(TestCase):
             result = generator.get_vm_disk(specified_vc=specified_vc, pod_name="ignored-pod")
 
             # Should call with priority-pod, not ignored-pod
-            mock_get_pvc.assert_called_once_with(namespace="", pod_name="priority-pod")
+            # #837 added the claim preference and the strict flag; the pod name
+            # remains what this test pins.
+            mock_get_pvc.assert_called_once_with(namespace="", pod_name="priority-pod", claim_name="", strict=False)
 
             expected = {
                 "vm_device": "rootdisk",
@@ -1344,7 +1346,9 @@ class OCPGeneratorTestCase(TestCase):
             result = generator.get_vm_disk(specified_vc=specified_vc, pod_name="param-pod")
 
             # Should call with param-pod
-            mock_get_pvc.assert_called_once_with(namespace="", pod_name="param-pod")
+            # #837 added the claim preference and the strict flag; the pod name
+            # remains what this test pins.
+            mock_get_pvc.assert_called_once_with(namespace="", pod_name="param-pod", claim_name="", strict=False)
 
             expected = {
                 "vm_device": "testdisk",
@@ -3486,6 +3490,111 @@ class OCPGeneratorTestCase(TestCase):
         self.assertIn("shared-ns/db", message)
         self.assertIn("node-1", message)
         self.assertIn("node-2", message)
+
+    def _claim_volume(self, volume_name, claim_name, capacity_gib, pod="pod-a"):
+        """A volume carrying one claim bound to a pod."""
+        return {
+            "volume_name": volume_name,
+            "volume_request_gig": 250,
+            "volume_claims": [{"volume_claim_name": claim_name, "pod_name": pod, "capacity_gig": capacity_gib}],
+        }
+
+    def _claim_attributes(self, volumes_by_node, vms=()):
+        """One node per entry, each serving namespace ns1."""
+        return {
+            "nodes": [
+                {
+                    "node_name": node_name,
+                    "cpu_cores": 16,
+                    "memory_gig": 64,
+                    "resource_id": f"r-{node_name}",
+                    "namespaces": {
+                        "ns1": {
+                            "volumes": volumes,
+                            "pods": [],
+                            "virtual_machines": [dict(vm) for vm in vms],
+                        }
+                    },
+                }
+                for node_name, volumes in volumes_by_node
+            ]
+        }
+
+    def test_duplicate_declared_claim_in_one_namespace_raises(self):
+        """Two PVCs with one name in a namespace is not valid Kubernetes (#837)."""
+        same_node = [("n1", [self._claim_volume("vol-a", "data", 10), self._claim_volume("vol-b", "data", 100)])]
+        cross_node = [
+            ("n1", [self._claim_volume("vol-a", "data", 10)]),
+            ("n2", [self._claim_volume("vol-b", "data", 100)]),
+        ]
+        for label, layout in (("same node", same_node), ("across nodes", cross_node)):
+            with self.subTest(layout=label):
+                with self.assertRaises(ValueError) as raised:
+                    OCPGenerator(self.two_hours_ago, self.now, self._claim_attributes(layout))
+                message = str(raised.exception)
+                self.assertIn("ns1/data", message, f"{label}: the duplicate claim identity must be named")
+                self.assertIn("vol-a", message, f"{label}: both volumes must be named")
+                self.assertIn("vol-b", message, f"{label}: both volumes must be named")
+
+    def test_vm_pod_with_two_claims_resolves_the_declared_claim(self):
+        """A VM pod with a rootdisk and a data PVC must ignore volume order (#837)."""
+        gib = 1024**3
+        vm = self._static_vm(2, 4) | {"vm_name": "vm-a", "pod_name": "vm-a", "volume_claim_name": "rootdisk"}
+        volumes = {
+            "rootdisk": self._claim_volume("vol-root", "rootdisk", 20, pod="vm-a"),
+            "data": self._claim_volume("vol-data", "data", 200, pod="vm-a"),
+        }
+        for order in (("rootdisk", "data"), ("data", "rootdisk")):
+            with self.subTest(volume_order=order):
+                attributes = self._claim_attributes([("n1", [volumes[name] for name in order])], [vm])
+                generator = OCPGenerator(self.two_hours_ago, self.now, attributes, constant_values_ros_ocp=True)
+                row = generator.vms["ns1/vm-a"]
+                self.assertEqual(
+                    row["vm_persistentvolumeclaim_name"],
+                    "rootdisk",
+                    f"order={order}: the VM's declared claim must win over volume declaration order; "
+                    "pod_pvc_map kept one claim per pod, so the last declared claim overwrote the rootdisk",
+                )
+                self.assertEqual(
+                    row["vc_capacity"],
+                    20 * gib,
+                    f"order={order}: the VM must carry its declared claim's capacity, not the data volume's",
+                )
+
+    def test_vm_pod_with_two_claims_and_no_declared_claim_raises(self):
+        """Two claims on one pod with nothing to choose between them must fail loudly (#837)."""
+        vm = self._static_vm(2, 4) | {"vm_name": "vm-a", "pod_name": "vm-a"}
+        volumes = [
+            self._claim_volume("vol-root", "rootdisk", 20, pod="vm-a"),
+            self._claim_volume("vol-data", "data", 200, pod="vm-a"),
+        ]
+        with self.assertRaises(ValueError) as raised:
+            OCPGenerator(self.two_hours_ago, self.now, self._claim_attributes([("n1", volumes)], [vm]))
+        message = str(raised.exception)
+        self.assertIn("ns1/vm-a", message)
+        self.assertIn("rootdisk", message)
+        self.assertIn("data", message)
+
+    def test_vm_declaring_an_unbound_claim_raises_in_static_mode(self):
+        """A declared claim the pod does not mount is a typo, not a diskless VM (#837)."""
+        vm = self._static_vm(2, 4) | {"vm_name": "vm-a", "pod_name": "vm-a", "volume_claim_name": "typo"}
+        volumes = [self._claim_volume("vol-data", "data", 200, pod="vm-a")]
+        with self.assertRaises(ValueError) as raised:
+            OCPGenerator(self.two_hours_ago, self.now, self._claim_attributes([("n1", volumes)], [vm]))
+        message = str(raised.exception)
+        self.assertIn("typo", message, "the declared claim name must be named")
+        self.assertIn("ns1/vm-a", message, "the pod identity must be named")
+        self.assertIn("data", message, "the claims actually bound to the pod must be offered")
+
+    def test_unbound_declared_claim_falls_back_when_not_strict(self):
+        """Random-mode VMs must keep generating instead of raising (#775's rule)."""
+        generator = OCPGenerator(self.two_hours_ago, self.now, {})
+        generator.pod_pvc_map["ns1/pod-a"] = ["data"]
+        self.assertEqual(
+            generator.get_specific_pvc_from_pod(namespace="ns1", pod_name="pod-a", claim_name="typo", strict=False),
+            ("", {}),
+            "a non-strict lookup must fall back, not abort a random run",
+        )
 
 
 class GenRosGpuMetricsTest(TestCase):
