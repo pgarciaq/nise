@@ -1660,8 +1660,11 @@ class OCPGenerator(AbstractGenerator):
                     if vm := get_vm_from_label(specified_pod.get("labels", "")):
                         vms = node["namespaces"][namespace].get("virtual_machines") or []
                         vm_names = {v.get("vm_name") for v in vms}
-                        if vm not in self.vm_pod_map:
-                            self.vm_pod_map[vm] = key
+                        # #821: VM names are namespace-scoped, so the map key
+                        # must be too - otherwise a/db overwrites b/db (#775).
+                        vm_key = pod_key(namespace, vm)
+                        if vm_key not in self.vm_pod_map:
+                            self.vm_pod_map[vm_key] = key
                         if vm in vm_names:
                             continue
                         pod_copy = copy.deepcopy(specified_pod)
@@ -1910,6 +1913,12 @@ class OCPGenerator(AbstractGenerator):
                 specified_vms = node.get("namespaces").get(namespace).get("virtual_machines") or []
                 for specified_vm in specified_vms:
                     vm = specified_vm.get("vm_name", self.fake.word())
+                    vm_key = pod_key(namespace, vm)
+                    if vm_key in vms:
+                        raise ValueError(
+                            f"duplicate vm identity {vm_key!r}: vm {vm!r} in namespace {namespace!r} "
+                            f"is declared on nodes {vms[vm_key].get('node')!r} and {node.get('name')!r}"
+                        )
                     namespace2vm[namespace].append(vm)
                     cpu_cores = node.get("cpu_cores")
                     memory_bytes = node.get("memory_bytes")
@@ -1939,7 +1948,7 @@ class OCPGenerator(AbstractGenerator):
                     memory_usage_gig = specified_vm.get("mem_usage_gig", {})
                     memory_usage_gig = {k: min(v, mem_limit_gig) * GIGABYTE for k, v in memory_usage_gig.items()}
                     memory_usage_gig = self._pre_parse_usage_dates(memory_usage_gig)
-                    vms[vm] = (
+                    vms[vm_key] = (
                         {
                             "node": node.get("name"),
                             "resource_id": node.get("resource_id"),
@@ -1959,7 +1968,7 @@ class OCPGenerator(AbstractGenerator):
                         | get_vm_instance(vm=specified_vm)
                         | self.get_vm_disk(specified_vc=specified_vm, namespace=namespace, static_report=True)
                     )
-                    vm_to_node[vm] = node
+                    vm_to_node[vm_key] = node
 
             else:
                 num_vms = randint(2, 20)
@@ -1967,6 +1976,10 @@ class OCPGenerator(AbstractGenerator):
                     vm_suffix = "".join(choices(ascii_lowercase, k=5))
                     vm_type = choice(("build", "deploy", vm_suffix))
                     vm = f"{self.fake.word()}_{vm_type}"
+                    # No duplicate check here: these names are random draws, not
+                    # declared identities - the same rule as pods (#775 keys its
+                    # loud failure on the static branch only).
+                    vm_key = pod_key(namespace, vm)
                     namespace2vm[namespace].append(vm)
                     cpu_cores = node.get("cpu_cores")
                     cpu_limit_cores = round(uniform(0.02, cpu_cores), 5)
@@ -1978,7 +1991,7 @@ class OCPGenerator(AbstractGenerator):
                     mem_limit_gig = round(uniform(25.0, memory_gig), 2)
                     mem_request_gig = round(uniform(25.0, mem_limit_gig), 2)
 
-                    vms[vm] = (
+                    vms[vm_key] = (
                         {
                             "node": node.get("name"),
                             "resource_id": node.get("resource_id"),
@@ -1995,14 +2008,22 @@ class OCPGenerator(AbstractGenerator):
                         | get_vm_instance()
                         | self.get_vm_disk(pod_name=vm, namespace=namespace)
                     )
-                    vm_to_node[vm] = node
+                    vm_to_node[vm_key] = node
 
-        vms_defined_in_pod_labels = {get_vm_from_label(pod["pod_labels"]) for _, pod in self.pods.items()}
+        # #821: a VM pod label names a VM *in its own namespace*, so the set of
+        # pod-backed VMs is namespace-qualified too - a virt-launcher pod for
+        # a/db must not make b/db look pod-backed.
+        vms_defined_in_pod_labels = {
+            pod_key(pod["namespace"], label)
+            for pod in self.pods.values()
+            if (label := get_vm_from_label(pod.get("pod_labels")))
+        }
         for namespace, vm_names in namespace2vm.items():
             for vm in vm_names:
-                node = vm_to_node[vm]
-                vm_copy = copy.deepcopy(vms[vm])
-                if vm not in vms_defined_in_pod_labels or vm not in self.vm_pod_map:
+                vm_key = pod_key(namespace, vm)
+                node = vm_to_node[vm_key]
+                vm_copy = copy.deepcopy(vms[vm_key])
+                if vm_key not in vms_defined_in_pod_labels or vm_key not in self.vm_pod_map:
                     # create pod corresponding to VM since it does not exist
                     vm_copy["pod_name"] = vm
                     vm_copy["labels"] = f"label_vm_kubevirt_io_name:{vm}"

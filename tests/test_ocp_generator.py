@@ -3222,7 +3222,7 @@ class OCPGeneratorTestCase(TestCase):
                 # its own namespace's claim and capacity (#830 review F2 —
                 # the direct-helper assertions alone would not catch a
                 # call site that drops the namespace).
-                vm_row = generator.vms[f"vm-{ns}"]
+                vm_row = generator.vms[f"{ns}/vm-{ns}"]
                 self.assertEqual(vm_row["vm_persistentvolumeclaim_name"], "data")
                 self.assertEqual(
                     vm_row["vc_capacity"],
@@ -3332,6 +3332,160 @@ class OCPGeneratorTestCase(TestCase):
         solo_rows = [row for row in rows if row["namespace"] == "ns-b" and row["persistentvolumeclaim"] == "solo"]
         self.assertEqual(len(solo_rows), 1, "an unshadowed VM claim must still be synthesized (#838 control)")
         self.assertEqual(solo_rows[0]["persistentvolumeclaim_capacity_bytes"], 4 * GIGABYTE)
+
+    @staticmethod
+    def _static_vm(cpu, mem):
+        """Minimal static VM whose period-wide usage is pinned to its own limits."""
+        return {
+            "vm_name": "db",
+            "cpu_cores": 8,
+            "cpu_limit": cpu,
+            "cpu_request": cpu,
+            "cpu_request_sockets": 1,
+            "cpu_request_threads": 1,
+            "cpu_usage": {"full_period": cpu},
+            "memory_bytes": 2_000_000_000,
+            "mem_request_gig": mem,
+            "mem_limit_gig": mem,
+            "mem_usage_gig": {"full_period": mem},
+            "vm_seconds": 3000,
+            "instance_type": "n1.xlarge",
+            "os": "rhel.10.arm64",
+            "guest_os_arch": "aarch64",
+            "guest_os_name": "Red Hat Enterprise Linux",
+        }
+
+    def _two_namespace_vm_attributes(self, order):
+        """One node, a VM named "db" in namespaces a and b with distinct facts."""
+        namespaces = {}
+        for ns in order:
+            namespaces[ns] = {"virtual_machines": [self._static_vm(2 if ns == "a" else 6, 4 if ns == "a" else 8)]}
+        return {
+            "nodes": [
+                {
+                    "node_name": "node-1",
+                    "node_labels": "l:n",
+                    "cpu_cores": 16,
+                    "memory_gig": 64,
+                    "resource_id": "r1",
+                    "namespaces": namespaces,
+                }
+            ]
+        }
+
+    def test_same_named_vms_in_two_namespaces_stay_distinct(self):
+        """a/db and b/db are distinct VMs; neither may overwrite the other (#821).
+
+        KubeVirt VM names are namespace-scoped. The generator keyed vms,
+        vm_to_node and vm_pod_map by vm_name alone, so the second namespace's
+        "db" overwrote the first: the VM CSV carried only the survivor's facts
+        and the other namespace's VM never reached ocp_vm_usage.csv at all.
+        """
+        for order in (("a", "b"), ("b", "a")):
+            start = datetime(2026, 11, 1)
+            generator = OCPGenerator(
+                start,
+                start + timedelta(days=1),
+                self._two_namespace_vm_attributes(order),
+                constant_values_ros_ocp=True,
+            )
+
+            self.assertEqual(
+                sorted(generator.vms),
+                ["a/db", "b/db"],
+                f"order={order}: same-named VMs in two namespaces collapsed to one key; "
+                "the later declaration overwrote the earlier (#821)",
+            )
+            self.assertEqual(
+                generator.namespace2vm,
+                {"a": ["db"], "b": ["db"]},
+                f"order={order}: the namespace -> VM relation must keep both entries with raw names",
+            )
+
+            rows = list(generator.generate_data(OCP_VM_USAGE))
+            self.assertEqual(
+                len(rows),
+                48,
+                f"order={order}: 24 hourly rows per VM (2 VMs), not 24 for the surviving one (#821)",
+            )
+            for ns, cpu in (("a", 2), ("b", 6)):
+                ns_rows = [row for row in rows if row["namespace"] == ns]
+                self.assertEqual(len(ns_rows), 24, f"order={order}: namespace {ns} must keep its 24 rows")
+                self.assertEqual(
+                    {row["vm_name"] for row in ns_rows},
+                    {"db"},
+                    f"order={order}: the CSV vm_name column keeps the raw name; only the maps qualify",
+                )
+                self.assertEqual(
+                    {row["vm_cpu_limit_core_seconds"] for row in ns_rows},
+                    {3000 * cpu},
+                    f"order={order}: namespace {ns} must emit its OWN VM's facts, not the survivor's (#821)",
+                )
+                self.assertEqual({row["node"] for row in ns_rows}, {"node-1"})
+
+    def test_labeled_vm_pod_in_one_namespace_does_not_suppress_other_namespaces_pod(self):
+        """A VM pod label is namespace-local; it must not hide another namespace's VM pod (#821).
+
+        vms_defined_in_pod_labels and vm_pod_map were keyed by bare vm name, so a
+        virt-launcher pod for a/db made b/db look pod-backed too: b's VM pod was
+        never created and its vm_pod_map entry was overwritten by a's.
+        """
+        attributes = self._two_namespace_vm_attributes(("a", "b"))
+        attributes["nodes"][0]["namespaces"]["a"]["pods"] = [
+            {
+                "pod_name": "web",
+                "labels": "label_vm_kubevirt_io_name:db",
+                "cpu_request": 1,
+                "cpu_limit": 2,
+                "mem_request_gig": 1,
+                "mem_limit_gig": 2,
+            }
+        ]
+        start = datetime(2026, 11, 1)
+        generator = OCPGenerator(start, start + timedelta(days=1), attributes, constant_values_ros_ocp=True)
+
+        self.assertIn("a/web", generator.pods, "the labeled pod itself must exist")
+        self.assertNotIn(
+            "a/db",
+            generator.pods,
+            "namespace a's VM is already pod-backed by its labeled pod; no second pod",
+        )
+        self.assertIn(
+            "b/db",
+            generator.pods,
+            "namespace b's VM has no labeled pod of its own, so its VM pod must be created; "
+            "a's label must not suppress it (#821)",
+        )
+        self.assertEqual(
+            set(generator.vm_pod_map),
+            {"a/db"},
+            "vm_pod_map must be keyed by namespace-qualified VM identity (#821)",
+        )
+        self.assertEqual(generator.vm_pod_map["a/db"], "a/web")
+
+    def test_duplicate_vm_identity_in_one_namespace_raises(self):
+        """The same namespace+vm_name on two nodes cannot be represented; fail loudly.
+
+        KubeVirt VM names are unique within a namespace, so last-wins would hide
+        a broken fixture (the rule accepted for pods in #775 D2).
+        """
+
+        def node(node_name):
+            return {
+                "node_name": node_name,
+                "cpu_cores": 8,
+                "memory_gig": 32,
+                "namespaces": {"shared-ns": {"virtual_machines": [self._static_vm(2, 4)]}},
+            }
+
+        attributes = {"nodes": [node("node-1"), node("node-2")]}
+
+        with self.assertRaises(ValueError) as raised:
+            OCPGenerator(self.two_hours_ago, self.now, attributes)
+        message = str(raised.exception)
+        self.assertIn("shared-ns/db", message)
+        self.assertIn("node-1", message)
+        self.assertIn("node-2", message)
 
 
 class GenRosGpuMetricsTest(TestCase):
