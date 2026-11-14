@@ -29,6 +29,7 @@ from nise.generators.ocp.ocp_generator import OCP_ROS_VM_PVC
 from nise.generators.ocp.ocp_generator import OCP_ROS_VM_PVC_COLUMNS
 from nise.generators.ocp.ocp_generator import OCP_ROS_VM_USAGE
 from nise.generators.ocp.ocp_generator import OCPGenerator
+from nise.generators.ocp.ocp_generator import pod_key
 
 GIGABYTE = 1024 * 1024 * 1024
 KIB_PER_GIB = 1024 * 1024
@@ -321,12 +322,12 @@ class OCPVirtualMachineGenerator(AbstractGenerator):
             buffer_kib = int(memory_request_kib * uniform(0.02, 0.10))
             row["memory_available_kib"] = max(0, memory_request_kib - memory_usage_kib + buffer_kib)
             row["filesystem_capacity_bytes"] = disk_allocated_bytes
-            vm_key = vm.get("vm_name", "")
-            if vm_key not in self._filesystem_used_bytes:
+            filesystem_key = pod_key(vm.get("namespace", ""), vm.get("vm_name", ""))
+            if filesystem_key not in self._filesystem_used_bytes:
                 base_used = (
                     8 * GIGABYTE if bool(vm.get("disk_filling_guest", False)) else int(uniform(5, 20) * GIGABYTE)
                 )
-                self._filesystem_used_bytes[vm_key] = base_used
+                self._filesystem_used_bytes[filesystem_key] = base_used
             if bool(vm.get("disk_critical", False)):
                 row["filesystem_used_bytes"] = int(disk_allocated_bytes * 0.96)
             else:
@@ -335,7 +336,7 @@ class OCPVirtualMachineGenerator(AbstractGenerator):
                 )
                 row["filesystem_used_bytes"] = min(
                     disk_allocated_bytes,
-                    int(self._filesystem_used_bytes[vm_key] + day_index * daily_growth),
+                    int(self._filesystem_used_bytes[filesystem_key] + day_index * daily_growth),
                 )
         else:
             row["memory_available_kib"] = ""

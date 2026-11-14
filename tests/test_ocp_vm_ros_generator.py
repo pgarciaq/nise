@@ -705,6 +705,105 @@ class OCPVirtualMachineGeneratorTestCase(TestCase):
         row = next(generator.generate_data(OCP_ROS_VM_PVC))
         self.assertEqual(row["volume_mode"], "Filesystem")
 
+    def _first_filesystem_used_bytes(self, attributes):
+        """Return {(namespace, vm_name): first non-empty filesystem_used_bytes}."""
+        generator = OCPVirtualMachineGenerator(self.start, self.end, attributes)
+        rows = list(generator.generate_data(OCP_ROS_VM_USAGE))
+        seen = {}
+        for row in rows:
+            used = row.get("filesystem_used_bytes")
+            if used in (None, ""):
+                continue
+            seen.setdefault((row["namespace"], row["vm_name"]), int(used))
+        return seen
+
+    def _same_name_vm(self, namespace, node_name="worker-1", **extra):
+        """A VM named 'db' in the given namespace, so identity differs only by namespace."""
+        vm = {
+            "vm_name": "db",
+            "namespace": namespace,
+            "node_name": node_name,
+            "guest_os": "linux",
+            "guest_agent": True,
+            "vcpu": 4,
+            "memory_gib": 8,
+            "disk_gib": 100,
+        }
+        vm.update(extra)
+        return vm
+
+    def test_filesystem_base_is_namespace_scoped(self):
+        """#861: a/db and b/db derive filesystem usage from their own bases, in either order."""
+        gib = 1024**3
+        filling = self._same_name_vm("a", disk_filling_guest=True)
+        normal = self._same_name_vm("b")
+        cases = (
+            ("filling declared first", [filling, normal]),
+            ("normal declared first", [normal, filling]),
+        )
+        for label, vms in cases:
+            with self.subTest(declaration_order=label):
+                first = self._first_filesystem_used_bytes({"vms": [dict(vm) for vm in vms]})
+                self.assertEqual(
+                    first[("a", "db")],
+                    8 * gib,
+                    msg=(
+                        f"{label}: a/db (disk_filling_guest) did not start from its own 8 GiB base; "
+                        "OCPVirtualMachineGenerator._filesystem_used_bytes is keyed by bare vm_name, "
+                        "so it shares one base with b/db"
+                    ),
+                )
+                self.assertNotEqual(
+                    first[("b", "db")],
+                    8 * gib,
+                    msg=(
+                        f"{label}: b/db (no disk_filling_guest) inherited a/db's 8 GiB base; the memo "
+                        "is keyed by bare vm_name, so same-named VMs in different namespaces collide"
+                    ),
+                )
+
+    def test_filesystem_base_is_not_shared_when_agents_start_at_different_times(self):
+        """#861: the memo fills lazily, so a later-reporting VM must not inherit an earlier base."""
+        gib = 1024**3
+        attributes = {
+            "vms": [
+                # Declared first, but its guest agent only reports from hour 5.
+                self._same_name_vm("a", disk_filling_guest=True, agent_install_hour=5),
+                # Reports from the first interval, so it reaches the memo table first.
+                self._same_name_vm("b", node_name="worker-2"),
+            ]
+        }
+        first = self._first_filesystem_used_bytes(attributes)
+        self.assertEqual(
+            first[("a", "db")],
+            8 * gib,
+            msg=(
+                "a/db (disk_filling_guest, agent from hour 5) started below its own 8 GiB base; "
+                "b/db populated the memo first because _filesystem_used_bytes is keyed by bare "
+                "vm_name, so the base travels by time as well as by declaration order"
+            ),
+        )
+
+    def test_filesystem_controls_for_filling_and_critical_flags(self):
+        """Control: distinct identities keep independent bases; disk_critical stays 0.96 * capacity."""
+        gib = 1024**3
+        attributes = {
+            "vms": [
+                self._same_name_vm("a", "worker-1", vm_name="fill", disk_filling_guest=True),
+                self._same_name_vm("b", "worker-2", vm_name="plain"),
+                self._same_name_vm("c", "worker-3", vm_name="crit", disk_critical=True),
+            ]
+        }
+        first = self._first_filesystem_used_bytes(attributes)
+        self.assertEqual(first[("a", "fill")], 8 * gib, msg="disk_filling_guest base is pinned to 8 GiB")
+        self.assertGreaterEqual(first[("b", "plain")], 5 * gib, msg="plain base is uniform(5, 20) GiB")
+        self.assertLess(first[("b", "plain")], 20 * gib, msg="plain base is uniform(5, 20) GiB")
+        self.assertEqual(
+            first[("c", "crit")],
+            int(100 * gib * 0.96),
+            msg="disk_critical short-circuits to 0.96 * disk_allocated_bytes and never reads the memo",
+        )
+
 
 class OCPVMReportIntegrationTestCase(TestCase):
     """Integration test writing ocp_ros_vm_usage.csv via ocp_create_report."""

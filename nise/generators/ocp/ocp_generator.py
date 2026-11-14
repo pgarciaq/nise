@@ -1057,16 +1057,18 @@ def vm_name_from_virt_launcher_pod(pod):
 
 
 def pod_key(namespace, pod_name):
-    """Namespace-qualified identity for pods and every map keyed by pod.
+    """Namespace-qualified identity for pods, VMs, and every map keyed by either.
 
-    Pod names are unique only within a namespace, so two namespaces may each
-    run a pod called "web". Maps keyed by pod name alone (pods, ros_data,
-    gpus, pod_pvc_map, vm_pod_map values) silently overwrite one of them; the
-    namespace-qualified key keeps both. Kubernetes DNS labels cannot contain
-    "/", so the separator is unambiguous. CSV-facing ``pod`` columns keep the
-    raw name.
+    Workload names are unique only within a namespace, so two namespaces may
+    each run a pod or a VM called "web". Maps keyed by the bare name (pods,
+    ros_data, gpus, pod_pvc_map, vm_pod_map values, vms, vm_to_node,
+    _filesystem_used_bytes) silently overwrite or share state between them;
+    the namespace-qualified key keeps both apart. Kubernetes DNS labels cannot
+    contain "/", so the separator is unambiguous. CSV-facing ``pod`` and
+    ``vm_name`` columns keep the raw name.
 
-    See https://github.com/pgarciaq/ros-ocp-backend/issues/775
+    See https://github.com/pgarciaq/ros-ocp-backend/issues/775 and
+    https://github.com/pgarciaq/ros-ocp-backend/issues/821
     """
     return f"{namespace}/{pod_name}"
 
