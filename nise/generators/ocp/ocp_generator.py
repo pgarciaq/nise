@@ -2014,7 +2014,15 @@ class OCPGenerator(AbstractGenerator):
                     self.ros_data[key] = ros_pod
                     self.namespace2pods[namespace].append(pod_name)
                 vcm = vm_copy.get("vm_persistentvolumeclaim_name")
-                if vcm and vcm not in self.pod_pvc_map.values():
+                # #838: pod_pvc_map values are claim NAMES, unique only within a
+                # namespace, so membership must be asked per namespace — a
+                # same-named claim in another namespace must not suppress this
+                # VM's volume synthesis. Keys are pod_key(namespace, pod) and
+                # Kubernetes DNS labels cannot contain "/", so the prefix split
+                # is unambiguous (#775).
+                if vcm and not any(
+                    key.split("/", 1)[0] == namespace and mapped == vcm for key, mapped in self.pod_pvc_map.items()
+                ):
                     specified_volume = {
                         "volume_claims": [
                             {

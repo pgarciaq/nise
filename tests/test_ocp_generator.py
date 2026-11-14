@@ -3230,6 +3230,109 @@ class OCPGeneratorTestCase(TestCase):
                     f"order={order}: the generated VM must carry namespace {ns}'s capacity (#830 review F2)",
                 )
 
+    def test_cross_namespace_claim_name_does_not_suppress_vm_storage(self):
+        """A VM's claim must not be shadowed by a same-named claim elsewhere (#838).
+
+        pod_pvc_map values are claim NAMES, so the synthesis gate asked "is this
+        name pod-backed ANYWHERE" instead of "in this VM's namespace". With a pod
+        claim "data" in ns-a, the ns-b VM's claim looked pod-backed, synthesis was
+        skipped, and the VM's storage row never existed.
+        """
+        for order in (("ns-a", "ns-b"), ("ns-b", "ns-a")):
+            namespaces = {}
+            for ns in order:
+                if ns == "ns-a":
+                    namespaces[ns] = {
+                        "pods": [
+                            {
+                                "pod_name": "web",
+                                "cpu_request": 1,
+                                "cpu_limit": 2,
+                                "mem_request_gig": 1,
+                                "mem_limit_gig": 2,
+                            }
+                        ],
+                        "volumes": [
+                            {
+                                "volume_name": "pv-a",
+                                "volume_request_gig": 10,
+                                "volume_claims": [{"volume_claim_name": "data", "pod_name": "web", "capacity_gig": 1}],
+                            }
+                        ],
+                    }
+                else:
+                    namespaces[ns] = {
+                        "virtual_machines": [
+                            {
+                                "vm_name": "vm-b",
+                                "volume_claim_name": "data",
+                                "capacity_gig": 4,
+                                "cpu_request": 1,
+                                "cpu_limit": 2,
+                            }
+                        ]
+                    }
+
+            start = datetime(2026, 11, 1)
+            generator = OCPGenerator(
+                start,
+                start + timedelta(hours=1),
+                {"nodes": [{"node_name": "n1", "cpu_cores": 16, "memory_gig": 64, "namespaces": namespaces}]},
+                constant_values_ros_ocp=True,
+            )
+
+            rows = list(generator.generate_data(report_type=OCP_STORAGE_USAGE))
+            vm_rows = [row for row in rows if row["namespace"] == "ns-b" and row["persistentvolumeclaim"] == "data"]
+            self.assertEqual(
+                len(vm_rows),
+                1,
+                f"order={order}: ns-a's pod claim named 'data' suppressed the ns-b VM's "
+                "volume synthesis, so the VM has no storage row (#838)",
+            )
+            self.assertEqual(
+                vm_rows[0]["persistentvolumeclaim_capacity_bytes"],
+                4 * GIGABYTE,
+                f"order={order}: the synthesized ns-b claim must carry the VM's own 4 GiB, not ns-a's 1 GiB (#838)",
+            )
+            pod_rows = [row for row in rows if row["namespace"] == "ns-a" and row["persistentvolumeclaim"] == "data"]
+            self.assertEqual(
+                len(pod_rows), 1, f"order={order}: the pod-backed namespace's storage row must be unchanged"
+            )
+            self.assertEqual(pod_rows[0]["persistentvolumeclaim_capacity_bytes"], 1 * GIGABYTE)
+
+    def test_vm_claim_synthesis_still_runs_when_name_is_unique(self):
+        """The intended path must survive the qualification: no pod-backed claim
+        anywhere still synthesizes the VM's volume (#838 control)."""
+        namespaces = {
+            "ns-a": {
+                "pods": [
+                    {"pod_name": "web", "cpu_request": 1, "cpu_limit": 2, "mem_request_gig": 1, "mem_limit_gig": 2}
+                ]
+            },
+            "ns-b": {
+                "virtual_machines": [
+                    {
+                        "vm_name": "vm-b",
+                        "volume_claim_name": "solo",
+                        "capacity_gig": 4,
+                        "cpu_request": 1,
+                        "cpu_limit": 2,
+                    }
+                ]
+            },
+        }
+        start = datetime(2026, 11, 1)
+        generator = OCPGenerator(
+            start,
+            start + timedelta(hours=1),
+            {"nodes": [{"node_name": "n1", "cpu_cores": 16, "memory_gig": 64, "namespaces": namespaces}]},
+            constant_values_ros_ocp=True,
+        )
+        rows = list(generator.generate_data(report_type=OCP_STORAGE_USAGE))
+        solo_rows = [row for row in rows if row["namespace"] == "ns-b" and row["persistentvolumeclaim"] == "solo"]
+        self.assertEqual(len(solo_rows), 1, "an unshadowed VM claim must still be synthesized (#838 control)")
+        self.assertEqual(solo_rows[0]["persistentvolumeclaim_capacity_bytes"], 4 * GIGABYTE)
+
 
 class GenRosGpuMetricsTest(TestCase):
     """Tests for the _gen_ros_gpu_metrics function with overrides."""
