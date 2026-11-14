@@ -791,6 +791,9 @@ class OCPVirtualMachineGeneratorTestCase(TestCase):
             "vms": [
                 self._same_name_vm("a", "worker-1", vm_name="fill", disk_filling_guest=True),
                 self._same_name_vm("b", "worker-2", vm_name="plain"),
+                # Same namespace, distinct names: kills a fix that keys by namespace alone.
+                self._same_name_vm("d", "worker-4", vm_name="fill-2", disk_filling_guest=True),
+                self._same_name_vm("d", "worker-4", vm_name="plain-2"),
                 self._same_name_vm("c", "worker-3", vm_name="crit", disk_critical=True),
             ]
         }
@@ -798,6 +801,12 @@ class OCPVirtualMachineGeneratorTestCase(TestCase):
         self.assertEqual(first[("a", "fill")], 8 * gib, msg="disk_filling_guest base is pinned to 8 GiB")
         self.assertGreaterEqual(first[("b", "plain")], 5 * gib, msg="plain base is uniform(5, 20) GiB")
         self.assertLess(first[("b", "plain")], 20 * gib, msg="plain base is uniform(5, 20) GiB")
+        self.assertEqual(first[("d", "fill-2")], 8 * gib, msg="distinct names in one namespace stay independent")
+        self.assertNotEqual(
+            first[("d", "plain-2")],
+            8 * gib,
+            msg="plain-2 inherited fill-2's base: the memo is shared within a single namespace",
+        )
         self.assertEqual(
             first[("c", "crit")],
             int(100 * gib * 0.96),
