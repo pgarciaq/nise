@@ -860,13 +860,24 @@ def namespace_quota_used_values(
 
 
 def namespace_quota_extended_values(quota_config, constant_values_ros_ocp=False):
-    """Optional per-ResourceQuota storage/pods/object-count for ROS namespace CSV."""
-    storage_hard = float(quota_config.get("storage_request_hard", 50 * 1024**3))
-    storage_used = float(
-        quota_config.get(
-            "storage_request_used",
-            storage_hard * (0.65 if constant_values_ros_ocp else uniform(0.3, 0.85)),
-        )
+    """Optional per-ResourceQuota storage/pods/object-count for ROS namespace CSV.
+
+    Storage accepts both spellings and `_quota_bytes` settles the precedence,
+    exactly as the cluster-quota path does (#824). The default stays this
+    function's own 50 GiB — deliberately different from the CRQ default, so
+    the two must not share a constant.
+    """
+    storage_hard = _quota_bytes(
+        quota_config,
+        "storage_request_hard_gig",
+        "storage_request_hard",
+        50 * 1024**3,
+    )
+    storage_used = _quota_bytes(
+        quota_config,
+        "storage_request_used_gig",
+        "storage_request_used",
+        storage_hard * (0.65 if constant_values_ros_ocp else uniform(0.3, 0.85)),
     )
     pods_hard = int(quota_config.get("pods_hard", 50))
     pods_used = int(quota_config.get("pods_used", max(1, int(pods_hard * 0.6))))
