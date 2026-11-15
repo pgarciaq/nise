@@ -3,6 +3,19 @@
 # High pod requests inflate ResourceQuota hard sums; low usage and explicit
 # resource_quota used values exercise the quota plugin tighten/raise paths.
 #
+# Declared vs defaulted (#825): this fixture declares only the cpu and memory
+# *used* values below. Everything else in the namespace quota columns is
+# nise's synthetic default, not a value chosen to exercise a path:
+#   storage_request_namespace_hard  50 GiB            (53687091200.0 bytes)
+#   storage_request_namespace_used  hard x U(0.3,0.85), redrawn per row
+#   pods_namespace_hard/_used       50 / 30
+#   object_count_namespace_hard/_used 100 / 50
+#   quota_name                      "compute-quota"
+# These are deliberate: blanket-declaring numbers would trade invented
+# defaults for arbitrary picks. Declare the storage/pod/object quotas here
+# when an E2E needs to assert those recommendations; the values are listed in
+# docs-site/testing/test-data-recipes.md (ros-ocp-backend).
+#
 # Use with generate_nise_data(..., iqe_template="ocp_report_quota.yml", include_ros=True)
 generators:
   - OCPGenerator:
