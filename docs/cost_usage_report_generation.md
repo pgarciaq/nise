@@ -196,6 +196,14 @@ example the same namespace on two nodes) is rejected with a `ValueError`
 instead of silently keeping the last one. See
 [#775](https://github.com/pgarciaq/ros-ocp-backend/issues/775).
 
+In random mode (no static file) names are drawn at random, so two draws can land
+on the same `namespace` + name. Nise keeps both instead of letting the later
+write overwrite the earlier one: the repeat gets a numeric suffix (`web_build`,
+then `web_build-2`). The same rule covers a VM's synthesized pod when a regular
+pod already owns that name. If a namespace is saturated, the generator raises
+after 1000 suffixed candidates instead of looping. See
+[#860](https://github.com/pgarciaq/ros-ocp-backend/issues/860).
+
 ### Namespace usage aggregation
 
 `ocp_ros_namespace_usage` has one row per namespace per interval, and that row
