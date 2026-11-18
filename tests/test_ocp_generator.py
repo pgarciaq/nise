@@ -56,6 +56,9 @@ from nise.generators.ocp.ocp_generator import COST_OCP_REPORT_TYPE_TO_COLS
 from nise.generators.ocp.ocp_generator import ROS_OCP_REPORT_TYPE_TO_COLS
 from nise.generators.ocp.ocp_generator import OCPGenerator
 from nise.generators.ocp.ocp_generator import _gen_ros_gpu_metrics
+from nise.generators.ocp.ocp_generator import get_vm_from_label
+from nise.generators.ocp.ocp_generator import pod_key as qualified_identity
+from nise.generators.ocp.ocp_generator import unique_identity
 from nise.generators.ocp.ocp_generator import machineset_name_from_node
 from nise.generators.ocp.ocp_generator import node_capacity_pods_for_node
 from nise.generators.ocp.ocp_generator import ros_node_metadata
@@ -3490,6 +3493,172 @@ class OCPGeneratorTestCase(TestCase):
         self.assertIn("shared-ns/db", message)
         self.assertIn("node-1", message)
         self.assertIn("node-2", message)
+
+    def _random_mode_attributes(self):
+        """A node without a `namespaces` block drives the random-generation branch."""
+        return {"nodes": [{"node_name": "node-1", "cpu_cores": 16, "memory_gig": 64}]}
+
+    @staticmethod
+    def _fake_with_one_word():
+        """Faker stand-in whose every word is `same`, so repeated draws collide."""
+
+        class _ConstantWord:
+            def word(self, *args, **kwargs):
+                return "same"
+
+        return _ConstantWord()
+
+    @staticmethod
+    def _force_build_type(sequence, *args, **kwargs):
+        """Force only the ("build", "deploy", suffix) draw; other choices stay real.
+
+        Patching `choice` wholesale breaks `get_storage_class_and_driver()`,
+        which unpacks a 2-tuple from the same helper.
+        """
+        if isinstance(sequence, tuple) and len(sequence) == 3 and sequence[0] == "build" and sequence[1] == "deploy":
+            return "build"
+        return random.choice(sequence)
+
+    def test_random_pod_draws_in_one_namespace_keep_distinct_identities(self):
+        """#860: a repeated random draw must not overwrite the earlier pod.
+
+        Pre-fix both draws produced `same_build`, so `namespace2pods` recorded
+        two pods while `pods` held one: the second pod's usage replaced the
+        first and the namespace's pod list disagreed with its identity count.
+        """
+        generator = OCPGenerator(self.two_hours_ago, self.now, self._random_mode_attributes())
+        node = generator.nodes[0]
+
+        with (
+            patch("nise.generators.ocp.ocp_generator.randint", return_value=2),
+            patch("nise.generators.ocp.ocp_generator.choice", side_effect=self._force_build_type),
+        ):
+            generator.fake = self._fake_with_one_word()
+            pods, namespace2pod, _ = generator._gen_pods([("collide", node)])
+
+        self.assertEqual(namespace2pod["collide"], ["same_build", "same_build-2"])
+        self.assertEqual(sorted(pods), ["collide/same_build", "collide/same_build-2"])
+        self.assertEqual(sum(len(names) for names in namespace2pod.values()), len(pods))
+
+    def test_random_vm_draws_in_one_namespace_keep_distinct_identities(self):
+        """#860: two identical random VM draws must become two identities.
+
+        Pre-fix the second draw overwrote the first in `vms` while
+        `namespace2vm` recorded both, so one VM's usage vanished and the
+        duplicate list entry still synthesized a second VM row set.
+        """
+        generator = OCPGenerator(self.two_hours_ago, self.now, self._random_mode_attributes())
+        node = generator.nodes[0]
+
+        with (
+            patch("nise.generators.ocp.ocp_generator.randint", return_value=2),
+            patch("nise.generators.ocp.ocp_generator.choice", side_effect=self._force_build_type),
+        ):
+            generator.fake = self._fake_with_one_word()
+            vms, namespace2vm = generator._gen_virtual_machines([("collide", node)])
+
+        self.assertEqual(namespace2vm["collide"], ["same_build", "same_build-2"])
+        self.assertEqual(sorted(vms), ["collide/same_build", "collide/same_build-2"])
+        self.assertEqual(sum(len(names) for names in namespace2vm.values()), len(vms))
+
+    def test_vm_pod_name_does_not_overwrite_a_regular_pod(self):
+        """A VM's synthesized pod must not replace a same-named regular pod (#860).
+
+        VM and pod names are drawn from the same pool in the same namespace, so
+        the VM pod could take an identity a regular pod already owns; the map
+        write then replaced the regular pod's data and the namespace list gained
+        a duplicate entry.
+        """
+        generator = OCPGenerator(self.two_hours_ago, self.now, self._random_mode_attributes())
+        node = generator.nodes[0]
+        regular = {"namespace": "collide", "node": "node-1", "pod": "same_build", "pod_labels": None}
+        generator.pods["collide/same_build"] = dict(regular)
+        generator.ros_data["collide/same_build"] = dict(regular)
+        generator.namespace2pods["collide"].append("same_build")
+
+        with (
+            patch("nise.generators.ocp.ocp_generator.randint", return_value=2),
+            patch("nise.generators.ocp.ocp_generator.choice", side_effect=self._force_build_type),
+        ):
+            generator.fake = self._fake_with_one_word()
+            generator._gen_virtual_machines([("collide", node)])
+
+        self.assertEqual(
+            generator.pods["collide/same_build"],
+            regular,
+            "the regular pod's data must survive the VM pod synthesis",
+        )
+        vm_pods = {
+            key: pod for key, pod in generator.pods.items() if key.startswith("collide/") and pod.get("pod_labels")
+        }
+        self.assertEqual(len(vm_pods), 2, "each VM needs its own pod identity")
+        self.assertEqual(
+            {get_vm_from_label(pod["pod_labels"]) for pod in vm_pods.values()},
+            {"same_build", "same_build-2"},
+            "both VM pods must remain linked to their VM by label",
+        )
+        self.assertNotIn("collide/same_build", vm_pods)
+        collide_identities = {key for key in generator.pods if key.startswith("collide/")}
+        self.assertEqual(len(generator.namespace2pods["collide"]), len(collide_identities))
+
+    def test_random_mode_identity_maps_match_namespace_lists(self):
+        """Every declared name owns exactly one identity, over 20 instances (#860).
+
+        The constructor asserts map consistency, but that check compared map key
+        sets only, so a duplicate on either side of the overwrite was invisible.
+        """
+        for instance in range(20):
+            with self.subTest(instance=instance):
+                generator = OCPGenerator(self.two_hours_ago, self.now, {})
+                for kind, names_by_namespace, identities in (
+                    ("pod", generator.namespace2pods, generator.pods),
+                    ("vm", generator.namespace2vm, generator.vms),
+                ):
+                    declared = [(namespace, name) for namespace, names in names_by_namespace.items() for name in names]
+                    self.assertEqual(len(declared), len(set(declared)), f"{kind}: duplicate identity")
+                    self.assertEqual(len(declared), len(identities), f"{kind}: list/map length mismatch")
+
+    def test_consistency_assert_rejects_a_duplicate_namespace_entry(self):
+        """The constructor invariant must see a duplicate list entry (#860).
+
+        Comparing map key sets collapses a duplicate on both sides, so the old
+        check could not fail; the list-length check is what makes a future
+        unsuffixed call site loud instead of silent.
+        """
+        generator = OCPGenerator(self.two_hours_ago, self.now, {})
+        namespace, name = next(iter(generator.pods)).split("/", 1)
+        generator.namespace2pods[namespace].append(name)
+        with self.assertRaises(ValueError) as raised:
+            generator._assert_pod_identity_maps_consistent()
+        self.assertIn("duplicate pod identities", str(raised.exception))
+
+        generator = OCPGenerator(self.two_hours_ago, self.now, {})
+        namespace, name = next(iter(generator.vms)).split("/", 1)
+        generator.namespace2vm[namespace].append(name)
+        with self.assertRaises(ValueError) as raised:
+            generator._assert_pod_identity_maps_consistent()
+        self.assertIn("duplicate vm identities", str(raised.exception))
+
+    def test_unique_identity_suffixes_until_free(self):
+        """The suffix starts at -2, skips taken candidates, and is namespace-scoped."""
+        self.assertEqual(unique_identity("a", "db", set()), "db")
+        self.assertEqual(unique_identity("a", "db", {qualified_identity("a", "db")}), "db-2")
+        self.assertEqual(
+            unique_identity("a", "db", {qualified_identity("a", "db"), qualified_identity("a", "db-2")}), "db-3"
+        )
+        self.assertEqual(
+            unique_identity("a", "db", {qualified_identity("b", "db")}),
+            "db",
+            "identity is namespace-scoped: another namespace's db is a different workload",
+        )
+
+    def test_unique_identity_is_bounded(self):
+        """A saturated namespace fails loudly instead of looping forever."""
+        used = {qualified_identity("a", "db")} | {qualified_identity("a", f"db-{suffix}") for suffix in range(2, 4)}
+        with self.assertRaises(ValueError) as raised:
+            unique_identity("a", "db", used, limit=2)
+        self.assertIn("db", str(raised.exception))
+        self.assertIn("'a'", str(raised.exception))
 
     def _claim_volume(self, volume_name, claim_name, capacity_gib, pod="pod-a"):
         """A volume carrying one claim bound to a pod."""

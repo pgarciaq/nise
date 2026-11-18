@@ -1084,6 +1084,35 @@ def pod_key(namespace, pod_name):
     return f"{namespace}/{pod_name}"
 
 
+def unique_identity(namespace, name, used, limit=1000):
+    """Return a namespace-scoped name that is not already in ``used`` (#860).
+
+    Random-mode pod and VM names come from ``fake.word()`` plus a three-way
+    type draw, so two draws can land on the same ``(namespace, name)`` pair.
+    The later write then replaces the earlier identity in the map while the
+    namespace list keeps both entries: one workload's usage disappears and the
+    list disagrees with the map.
+
+    ``used`` is any container keyed by ``pod_key(namespace, name)`` — the
+    ``pods``/``vms`` maps, or a set of identities. Suffixes start at ``-2`` and
+    the search stops at ``limit`` candidates so a saturated namespace fails
+    loudly instead of looping.
+
+    Suffixing rather than redrawing keeps the random stream intact: a retry
+    would consume an extra ``fake.word()`` and shift every later value for a
+    fixed seed, changing unrelated CSV output.
+    """
+    if pod_key(namespace, name) not in used:
+        return name
+    for suffix in range(2, limit + 2):
+        candidate = f"{name}-{suffix}"
+        if pod_key(namespace, candidate) not in used:
+            return candidate
+    raise ValueError(
+        f"could not build a unique identity for {name!r} in namespace {namespace!r} after {limit} suffixed candidates"
+    )
+
+
 def machineset_name_from_node(node_name):
     """Derive MachineSet name from node hostname (e.g. worker-0 -> worker, infra-1 -> infra)."""
     if not node_name:
@@ -1691,7 +1720,9 @@ class OCPGenerator(AbstractGenerator):
                 for _ in range(num_pods):
                     pod_suffix = "".join(choices(ascii_lowercase, k=5))
                     pod_type = choice(("build", "deploy", pod_suffix))
-                    pod_name = f"{self.fake.word()}_{pod_type}"
+                    # #860: suffix a repeated draw instead of overwriting the
+                    # earlier pod's row; `pods` covers every namespace and node.
+                    pod_name = unique_identity(namespace, f"{self.fake.word()}_{pod_type}", pods)
                     key = pod_key(namespace, pod_name)
                     namespace2pod[namespace].append(pod_name)
                     cpu_cores = node.get("cpu_cores")
@@ -2045,10 +2076,10 @@ class OCPGenerator(AbstractGenerator):
                 for _ in range(num_vms):
                     vm_suffix = "".join(choices(ascii_lowercase, k=5))
                     vm_type = choice(("build", "deploy", vm_suffix))
-                    vm = f"{self.fake.word()}_{vm_type}"
-                    # No duplicate check here: these names are random draws, not
-                    # declared identities - the same rule as pods (#775 keys its
-                    # loud failure on the static branch only).
+                    # #860: a repeated draw used to overwrite the earlier VM in
+                    # `vms` while `namespace2vm` kept both names, so one VM's
+                    # rows vanished and the duplicate still synthesized its pod.
+                    vm = unique_identity(namespace, f"{self.fake.word()}_{vm_type}", vms)
                     vm_key = pod_key(namespace, vm)
                     namespace2vm[namespace].append(vm)
                     cpu_cores = node.get("cpu_cores")
@@ -2094,8 +2125,13 @@ class OCPGenerator(AbstractGenerator):
                 node = vm_to_node[vm_key]
                 vm_copy = copy.deepcopy(vms[vm_key])
                 if vm_key not in vms_defined_in_pod_labels or vm_key not in self.vm_pod_map:
-                    # create pod corresponding to VM since it does not exist
-                    vm_copy["pod_name"] = vm
+                    # create pod corresponding to VM since it does not exist.
+                    # #860: this pod shares the namespace with regular pods
+                    # drawn from the same name pool, so it must not take an
+                    # identity one of them already owns - the map write below
+                    # would replace that pod's data and duplicate the list.
+                    pod_name = unique_identity(namespace, vm, self.pods)
+                    vm_copy["pod_name"] = pod_name
                     vm_copy["labels"] = f"label_vm_kubevirt_io_name:{vm}"
                     if pod_seconds := vm_copy.get("vm_seconds"):
                         vm_copy["pod_seconds"] = pod_seconds
@@ -3027,10 +3063,12 @@ class OCPGenerator(AbstractGenerator):
                 ros_pod.update(_EMPTY_GPU_METRICS)
 
     def _assert_pod_identity_maps_consistent(self):
-        """Pod-derived maps must all use the namespace-qualified identity.
+        """Pod- and VM-derived maps must agree with the names recorded per namespace.
 
-        A divergence means one map was keyed by a bare pod name again and the
-        same-named-pod overwrite (#775) can come back silently.
+        A divergence means one map was keyed by a bare pod name again (#775,
+        #821) or a random draw reused an identity and the later write silently
+        replaced the earlier one (#860). Comparing map key sets alone cannot
+        see the second case: both sides collapse the duplicate.
         """
         if set(self.ros_data) != set(self.pods):
             missing = sorted(set(self.pods) - set(self.ros_data))
@@ -3038,6 +3076,26 @@ class OCPGenerator(AbstractGenerator):
             raise ValueError(f"pods/ros_data identity mismatch: missing from ros_data {missing}, unexpected {extra}")
         if not set(self.gpus) <= set(self.pods):
             raise ValueError(f"gpus reference unknown pod identities: {sorted(set(self.gpus) - set(self.pods))}")
+        self._assert_names_match_identities("pod", self.namespace2pods, self.pods)
+        self._assert_names_match_identities("vm", self.namespace2vm, self.vms)
+
+    @staticmethod
+    def _assert_names_match_identities(kind, names_by_namespace, identities):
+        """Each name recorded per namespace must own exactly one identity entry."""
+        declared = {}
+        for namespace, names in names_by_namespace.items():
+            for name in names:
+                key = pod_key(namespace, name)
+                declared[key] = declared.get(key, 0) + 1
+        duplicated = sorted(key for key, count in declared.items() if count > 1)
+        if duplicated:
+            raise ValueError(f"duplicate {kind} identities in the namespace lists: {duplicated}")
+        if set(declared) != set(identities):
+            missing = sorted(set(declared) - set(identities))
+            unexpected = sorted(set(identities) - set(declared))
+            raise ValueError(
+                f"{kind} identity mismatch: listed but not stored {missing}, stored but not listed {unexpected}"
+            )
 
     def _gen_hourly_gpu_usage(self, **kwargs):
         """Create hourly data for GPU usage."""
