@@ -813,6 +813,66 @@ class OCPVirtualMachineGeneratorTestCase(TestCase):
             msg="disk_critical short-circuits to 0.96 * disk_allocated_bytes and never reads the memo",
         )
 
+    def _vm(self, vm_name="db", namespace="a", **extra):
+        """One VM declaration for the flat ``vms:`` list."""
+        return {
+            "vm_name": vm_name,
+            "namespace": namespace,
+            "node_name": "worker-1",
+            "guest_os": "linux",
+            "vcpu": 2,
+            "memory_gib": 4,
+            "disk_gib": 20,
+            **extra,
+        }
+
+    def test_duplicate_declared_vm_identity_raises(self):
+        """#862: the flat vms: list cannot declare one (namespace, vm_name) twice.
+
+        Pre-fix each declaration is generated independently, so one
+        identity-interval carries two rows with conflicting cpu/memory/iops and
+        the downstream digest computes percentiles over a doubled sample set.
+        """
+        attributes = {"vms": [self._vm(), self._vm()]}
+
+        with self.assertRaises(ValueError) as raised:
+            OCPVirtualMachineGenerator(self.start, self.end, attributes)
+
+        message = str(raised.exception)
+        self.assertIn("a/db", message, "the duplicate identity must be named")
+        self.assertIn("vms[0]", message, "the first declaration's position must be named")
+        self.assertIn("vms[1]", message, "the repeated declaration's position must be named")
+
+    def test_duplicate_declared_vm_identity_names_every_position(self):
+        """A third declaration must be named too, and distinct identities exempt.
+
+        Pins the >2 formatting: reporting only the first repeat would leave the
+        fixture author with one duplicate still to find.
+        """
+        attributes = {"vms": [self._vm(), self._vm(vm_name="other"), self._vm(), self._vm()]}
+
+        with self.assertRaises(ValueError) as raised:
+            OCPVirtualMachineGenerator(self.start, self.end, attributes)
+
+        message = str(raised.exception)
+        for position in ("vms[0]", "vms[2]", "vms[3]"):
+            self.assertIn(position, message)
+        self.assertNotIn("vms[1]", message, "vms[1] is a distinct identity and must not be named")
+
+    def test_same_vm_name_in_different_namespaces_is_not_a_duplicate(self):
+        """VM identity is namespace-qualified: a/db and b/db are two VMs (#821).
+
+        Rules out a fix keyed on the bare vm_name, which would reject a valid
+        fixture and pass the duplicate tests above.
+        """
+        attributes = {"vms": [self._vm(namespace="a"), self._vm(namespace="b")]}
+
+        generator = OCPVirtualMachineGenerator(self.start, self.end, attributes)
+        rows = list(generator.generate_data(OCP_ROS_VM_USAGE))
+
+        self.assertEqual(len(rows), 2 * 96 * 2)
+        self.assertEqual({(r["namespace"], r["vm_name"]) for r in rows}, {("a", "db"), ("b", "db")})
+
 
 class OCPVMReportIntegrationTestCase(TestCase):
     """Integration test writing ocp_ros_vm_usage.csv via ocp_create_report."""

@@ -129,17 +129,52 @@ class OCPVirtualMachineGenerator(AbstractGenerator):
         """Load VM definitions from static YAML attributes."""
         vms = self._attributes.get("vms")
         if not vms:
-            return [dict(vm) for vm in DEFAULT_VMS]
-        loaded = []
-        for item in vms:
-            vm = dict(item)
-            vm.setdefault("guest_agent", True)
-            vm.setdefault("idle", False)
-            vm.setdefault("abandoned", False)
-            if "guest_os" not in vm:
-                vm["guest_os"] = "linux"
-            loaded.append(vm)
+            loaded = [dict(vm) for vm in DEFAULT_VMS]
+        else:
+            loaded = []
+            for item in vms:
+                vm = dict(item)
+                vm.setdefault("guest_agent", True)
+                vm.setdefault("idle", False)
+                vm.setdefault("abandoned", False)
+                if "guest_os" not in vm:
+                    vm["guest_os"] = "linux"
+                loaded.append(vm)
+        self._reject_duplicate_vm_identities(loaded)
         return loaded
+
+    @staticmethod
+    def _reject_duplicate_vm_identities(vms):
+        """Reject a flat ``vms:`` list that declares one identity twice (#862).
+
+        VM identity is namespace-qualified — the rule OCPGenerator already
+        enforces for declared pods (#775) and VMs (#821). This list is flat and
+        carries no node, so the position in the list is the locator.
+
+        Pre-fix, each declaration was generated independently: one
+        identity-interval carried two rows with conflicting cpu, memory and I/O,
+        and the ROS digest appended both samples, so percentiles and restart
+        counts were computed over a doubled set. Silent, because the digest is
+        an aggregate and row counts never reveal it.
+
+        Both lists are checked: the DEFAULT_VMS fallback ships rows too, so a
+        duplicate added there would fail the same way.
+        """
+        positions = {}
+        for index, vm in enumerate(vms):
+            # pod_key is the namespace-qualified identity used everywhere else
+            # in the generators; a bare vm_name would reject a/db and b/db.
+            key = pod_key(vm.get("namespace", ""), vm.get("vm_name", ""))
+            positions.setdefault(key, []).append(index)
+        duplicates = {key: indexes for key, indexes in positions.items() if len(indexes) > 1}
+        if duplicates:
+            detail = "; ".join(
+                f"{key!r} at {', '.join(f'vms[{index}]' for index in indexes)}" for key, indexes in duplicates.items()
+            )
+            raise ValueError(
+                f"duplicate vm identities in the flat vms list: {detail}; "
+                "each (namespace, vm_name) must be declared once"
+            )
 
     def _init_data_row(self, start, end, **kwargs):
         """Create a row with placeholders for all VM ROS headers."""
