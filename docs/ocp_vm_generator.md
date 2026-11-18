@@ -71,6 +71,11 @@ generators:
 | `sequential_io` / `random_io` | bool | no | I/O size patterns (notifications **58** / **59**; tiering **69** / **68**). |
 | `network_heavy` | bool | no | Sustained network throughput/PPS (notification **55**). |
 
+`(namespace, vm_name)` is the VM identity: declaring the same pair twice in one
+`vms:` list is rejected, naming every repeated identity and its list positions
+(`vms[2]`, `vms[3]`). Distinct namespaces may reuse a name — `a/db` and `b/db`
+are two VMs.
+
 ### Per-GPU device CSV (`ocp_ros_vm_gpu_device`)
 
 When a VM has `gpu_devices` or `gpu_count` &gt; 0, nise also emits **`ocp_ros_vm_gpu_device.csv`** (15-minute rows, one per device per interval).
