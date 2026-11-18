@@ -210,6 +210,11 @@ generators:
               pods:
                 - pod:
                   pod_name: stage
+                  # #837: this pod carries label_vm_kubevirt_io_name, so nise
+                  # synthesizes a VM record for it and must resolve its disk;
+                  # three claims are bound to the pod, so the VM needs an
+                  # explicit selection.
+                  volume_claim_name: stage_data
                   cpu_request: 2
                   mem_request_gig: 1
                   cpu_limit: 3
