@@ -1,0 +1,216 @@
+---
+# HCP hosted control planes: four hosted clusters' control-plane namespaces
+# on one management payload (consumes #726's manifest override; entry shape
+# per #621/#715, same as ocp_report_w8_sleep_mgmt.yml).
+#
+# Why this exists: the HCP *recommendation* surface is driven by the
+# operator's manifest topology facts (cr_status.topology.hcpSnapshot +
+# hostedControlPlaneNamespaces), not by the HCP capacity CSV. A synthetic
+# payload whose manifest carries no cr_status leaves no namespace known as a
+# hosted control plane, so the HCP list stays empty no matter how much
+# capacity data the payload ships. This fixture makes the association,
+# right-sizing rows and the W8 non-prod tier declaration all real.
+#
+# The four namespaces are shaped to exercise distinct verdicts rather than to
+# look uniform: hc1/hc2 run hot (apiserver usage well above request ratio),
+# hc3 is oversized (16 GiB request at 1.4 GiB usage), hc4 is idle (0.02 cores
+# at a 2-core request). hc4 also carries hcTier: non-prod, which is what the
+# W8 sleep advisory joins on (ADR-0348).
+#
+# Unlike the advisory parity pairs (#721-#724), this is a single management
+# payload: the association and right-sizing rows need topology + usage, not a
+# matching guest generation, so hostedClusterID is a fixed UUID here.
+#
+#   nise report ocp --static-report-file ocp_report_hcp_controlplane.yml \
+#     --ocp-cluster-id <management-cluster-id> --ros-ocp-info -w \
+#     --insights-upload <scratch>/hcp-extract
+generators:
+  - OCPGenerator:
+      nodes:
+        - node:
+          node_name: demo-special-worker-1
+          cpu_cores: 16
+          memory_gig: 64
+          resource_id: 99001001
+          namespaces:
+            clusters-demo-hc1:
+              pods:
+                - pod:
+                  pod_name: kube-apiserver
+                  cpu_request: 2
+                  cpu_limit: 4
+                  mem_request_gig: 8
+                  mem_limit_gig: 16
+                  pod_seconds: 3600
+                  cpu_usage:
+                    full_period: 0.45
+                  mem_usage_gig:
+                    full_period: 3.2
+                  workload: deployment
+                - pod:
+                  pod_name: etcd
+                  cpu_request: 1
+                  cpu_limit: 2
+                  mem_request_gig: 8
+                  mem_limit_gig: 8
+                  pod_seconds: 3600
+                  cpu_usage:
+                    full_period: 0.2
+                  mem_usage_gig:
+                    full_period: 2.6
+                  workload: statefulset
+                - pod:
+                  pod_name: kube-controller-manager
+                  cpu_request: 1
+                  cpu_limit: 2
+                  mem_request_gig: 2
+                  mem_limit_gig: 4
+                  pod_seconds: 3600
+                  cpu_usage:
+                    full_period: 0.18
+                  mem_usage_gig:
+                    full_period: 0.9
+                  workload: deployment
+            clusters-demo-hc2:
+              pods:
+                - pod:
+                  pod_name: kube-apiserver
+                  cpu_request: 2
+                  cpu_limit: 4
+                  mem_request_gig: 8
+                  mem_limit_gig: 16
+                  pod_seconds: 3600
+                  cpu_usage:
+                    full_period: 0.9
+                  mem_usage_gig:
+                    full_period: 3.6
+                  workload: deployment
+                - pod:
+                  pod_name: etcd
+                  cpu_request: 1
+                  cpu_limit: 2
+                  mem_request_gig: 8
+                  mem_limit_gig: 8
+                  pod_seconds: 3600
+                  cpu_usage:
+                    full_period: 0.75
+                  mem_usage_gig:
+                    full_period: 4.4
+                  workload: statefulset
+                - pod:
+                  pod_name: openshift-apiserver
+                  cpu_request: 1
+                  cpu_limit: 2
+                  mem_request_gig: 2
+                  mem_limit_gig: 4
+                  pod_seconds: 3600
+                  cpu_usage:
+                    full_period: 0.08
+                  mem_usage_gig:
+                    full_period: 0.6
+                  workload: deployment
+            clusters-demo-hc3:
+              pods:
+                - pod:
+                  pod_name: kube-apiserver
+                  cpu_request: 4
+                  cpu_limit: 8
+                  mem_request_gig: 16
+                  mem_limit_gig: 32
+                  pod_seconds: 3600
+                  cpu_usage:
+                    full_period: 0.12
+                  mem_usage_gig:
+                    full_period: 1.4
+                  workload: deployment
+                - pod:
+                  pod_name: etcd
+                  cpu_request: 2
+                  cpu_limit: 4
+                  mem_request_gig: 8
+                  mem_limit_gig: 8
+                  pod_seconds: 3600
+                  cpu_usage:
+                    full_period: 0.09
+                  mem_usage_gig:
+                    full_period: 1.1
+                  workload: statefulset
+            clusters-demo-hc4:
+              pods:
+                - pod:
+                  pod_name: kube-apiserver
+                  cpu_request: 2
+                  cpu_limit: 4
+                  mem_request_gig: 8
+                  mem_limit_gig: 16
+                  pod_seconds: 3600
+                  cpu_usage:
+                    full_period: 0.02
+                  mem_usage_gig:
+                    full_period: 0.3
+                  workload: deployment
+                - pod:
+                  pod_name: etcd
+                  cpu_request: 1
+                  cpu_limit: 2
+                  mem_request_gig: 8
+                  mem_limit_gig: 8
+                  pod_seconds: 3600
+                  cpu_usage:
+                    full_period: 0.01
+                  mem_usage_gig:
+                    full_period: 0.2
+                  workload: statefulset
+                - pod:
+                  pod_name: kube-controller-manager
+                  cpu_request: 1
+                  cpu_limit: 2
+                  mem_request_gig: 2
+                  mem_limit_gig: 4
+                  pod_seconds: 3600
+                  cpu_usage:
+                    full_period: 0.02
+                  mem_usage_gig:
+                    full_period: 0.15
+                  workload: deployment
+
+manifest:
+  cr_status:
+    topology:
+      controlPlaneTopology: HighlyAvailable
+      hostedClusterCount: 4
+      hostedControlPlaneNamespaces:
+        - clusters-demo-hc1
+        - clusters-demo-hc2
+        - clusters-demo-hc3
+        - clusters-demo-hc4
+      hcpSnapshot:
+        - hcpNamespace: clusters-demo-hc1
+          hostedClusterID: 5f2c0a91-3d44-4b0e-9a11-2b7c4d8e6f01
+          hcUID: uid-demo-hc-1
+          hcpUID: uid-demo-hcp-1
+          namespaceUID: uid-demo-ns-1
+          observedAt: now-30m
+          complete: true
+        - hcpNamespace: clusters-demo-hc2
+          hostedClusterID: 8b4d1e72-6a55-4c3f-8b22-3c8d5e9f7a02
+          hcUID: uid-demo-hc-2
+          hcpUID: uid-demo-hcp-2
+          namespaceUID: uid-demo-ns-2
+          observedAt: now-30m
+          complete: true
+        - hcpNamespace: clusters-demo-hc3
+          hostedClusterID: c7a93f18-2e60-4d51-a0b3-4e9f6a2c8d03
+          hcUID: uid-demo-hc-3
+          hcpUID: uid-demo-hcp-3
+          namespaceUID: uid-demo-ns-3
+          observedAt: now-30m
+          complete: true
+        - hcpNamespace: clusters-demo-hc4
+          hostedClusterID: 1d6b8c40-9f73-4e82-b5c4-60af7b3e9d04
+          hcUID: uid-demo-hc-4
+          hcpUID: uid-demo-hcp-4
+          namespaceUID: uid-demo-ns-4
+          observedAt: now-30m
+          complete: true
+          hcTier: non-prod

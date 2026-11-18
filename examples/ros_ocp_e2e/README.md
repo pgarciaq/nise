@@ -44,6 +44,12 @@ nise report ocp --static-report-file examples/ros_ocp_e2e/ocp_report_gpu_mig.yml
 ### Nodes
 - `ocp_report_node_idle_consolidation.yml` — Node idle detection and consolidation
 
+### Hosted control planes
+- `ocp_report_hcp_controlplane.yml` — Four hosted clusters' control-plane namespaces on one management payload, with the `cr_status.topology` `hcpSnapshot` entries that make the HCP association, right-sizing rows and `hcTier: non-prod` real (#726)
+- `ocp_report_hcp_capacity.yml` — `ros-openshift-hcp-capacity` fleet-capacity snapshot for the management cluster (#702)
+
+`ocp_report_hcp_controlplane.yml` is a single management payload: the HCP association joins topology facts to usage, so it does not need the guest generation that the W8/zombie parity pairs do.
+
 ### Containers
 - `ocp_report_business_hours.yml` — Business hours vs all-hours comparison
 - `ocp_report_w8_sleep_guest.yml` / `ocp_report_w8_sleep_mgmt.yml` — W8 non-prod sleep-advisory parity fixture (the two-payload guest+management pair; #727)
